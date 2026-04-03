@@ -158,6 +158,19 @@ def inject_theme() -> None:
     border-color: #e59a3a !important;
     background: #fff4e5 !important;
   }}
+  [data-testid="stSidebar"] div[data-testid="stExpander"] {{
+    border: 1px solid rgba(245, 166, 35, 0.32);
+    border-radius: 10px;
+    background: linear-gradient(150deg, rgba(255,255,255,0.95) 0%, rgba(255,245,227,0.92) 55%, rgba(255,236,206,0.95) 100%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.74), 0 8px 18px rgba(245, 158, 11, 0.1);
+    margin-bottom: 0.38rem;
+    overflow: hidden;
+  }}
+  [data-testid="stSidebar"] div[data-testid="stExpander"] summary {{
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #1f2937;
+  }}
   .sidebar-reg-item {{
     position: relative;
     overflow: hidden;
@@ -1113,11 +1126,7 @@ def render_sidebar() -> None:
         )
     else:
         for table_name, table_df in st.session_state.data_registry.items():
-            st.sidebar.markdown(
-                f'<div class="sidebar-reg-item">{table_name}</div>',
-                unsafe_allow_html=True,
-            )
-            with st.sidebar.expander("Columns", expanded=False):
+            with st.sidebar.expander(f"{table_name}", expanded=False):
                 column_names = [str(c) for c in table_df.columns]
                 if not column_names:
                     st.markdown(
