@@ -130,8 +130,8 @@ def inject_theme() -> None:
     background: #ffffff;
     border: 1px solid #efdfc8;
     border-radius: 12px;
-    padding: 0.65rem 0.65rem 0.45rem 0.65rem;
-    margin-bottom: 0.65rem;
+    padding: 0.72rem 0.7rem 0.55rem 0.7rem;
+    margin-bottom: 0.95rem;
     box-shadow: 0 4px 12px rgba(17, 24, 39, 0.04);
   }}
   .sidebar-card-title {{
@@ -164,6 +164,23 @@ def inject_theme() -> None:
     margin-bottom: 0.3rem;
     color: #374151;
     font-size: 0.76rem;
+    word-break: break-word;
+  }}
+  [data-testid="stSidebar"] div[data-testid="stExpander"] {{
+    border: 1px solid #efe2cf;
+    border-radius: 10px;
+    background: #fffdfa;
+    margin-bottom: 0.35rem;
+  }}
+  .sidebar-col-item {{
+    border: 1px solid #f1eadf;
+    background: #fff;
+    border-radius: 7px;
+    padding: 0.2rem 0.4rem;
+    margin-bottom: 0.25rem;
+    color: #4b5563;
+    font-size: 0.73rem;
+    line-height: 1.3;
     word-break: break-word;
   }}
   .sidebar-empty {{
@@ -970,10 +987,6 @@ def render_sidebar() -> None:
         accept_multiple_files=True,
         label_visibility="collapsed",
     )
-    st.sidebar.markdown(
-        '<div class="sidebar-helper">200MB per file • CSV, XLSX, XLS</div>',
-        unsafe_allow_html=True,
-    )
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
     if uploads:
@@ -999,11 +1012,20 @@ def render_sidebar() -> None:
             unsafe_allow_html=True,
         )
     else:
-        for table_name in st.session_state.data_registry.keys():
+        for table_name, table_df in st.session_state.data_registry.items():
             st.sidebar.markdown(
                 f'<div class="sidebar-reg-item">{table_name}</div>',
                 unsafe_allow_html=True,
             )
+            with st.sidebar.expander(
+                f"Columns ({table_df.shape[1]})",
+                expanded=False,
+            ):
+                for col_name in table_df.columns.astype(str).tolist():
+                    st.markdown(
+                        f'<div class="sidebar-col-item">{col_name}</div>',
+                        unsafe_allow_html=True,
+                    )
 
     if st.sidebar.button("Clear Registry", use_container_width=True):
         st.session_state.data_registry = {}
