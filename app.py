@@ -5,7 +5,10 @@ The Outliers — Multi-File Data Joiner and Analytics Dashboard.
 from __future__ import annotations
 
 import io
+import json
 import os
+import re
+import urllib.request
 from typing import Any
 
 import nbformat
@@ -15,6 +18,13 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+try:
+    from sdv.metadata import SingleTableMetadata
+    from sdv.single_table import CTGANSynthesizer, TVAESynthesizer
+    SDV_AVAILABLE = True
+except Exception:
+    SDV_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Paths / branding
@@ -234,6 +244,242 @@ def build_column_statistics(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def detect_pii_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Detect likely PII columns using names and lightweight pattern checks."""
+    pii_name_tokens = {
+        "name", "email", "phone", "mobile", "contact", "address",
+        "pan", "aadhaar", "ssn", "passport", "dob"
+    }
+    email_re = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+    phone_re = re.compile(r"^\+?[\d\-\s\(\)]{10,}$")
+    rows: list[dict[str, Any]] = []
+
+    for c in df.columns:
+        s = df[c]
+        c_lower = str(c).lower()
+        by_name = any(tok in c_lower for tok in pii_name_tokens)
+        sample = s.dropna().astype(str).head(150)
+        email_hits = sum(1 for v in sample if email_re.match(v.strip()))
+        phone_hits = sum(
+            1 for v in sample
+            if phone_re.match(v.strip()) and sum(ch.isdigit() for ch in v) >= 10
+        )
+        sample_n = max(len(sample), 1)
+        by_pattern = (email_hits / sample_n) >= 0.35 or (phone_hits / sample_n) >= 0.35
+        pii_flag = by_name or by_pattern
+        reason = []
+        if by_name:
+            reason.append("name/token")
+        if by_pattern:
+            reason.append("pattern")
+        rows.append(
+            {
+                "column": c,
+                "dtype": str(s.dtype),
+                "pii_detected": pii_flag,
+                "reason": ", ".join(reason) if reason else "",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(show_spinner=False)
+def apply_privacy_transform(
+    df: pd.DataFrame,
+    pii_columns: tuple[str, ...],
+    scrub_mode: str,
+    k_anonymity: int,
+    noise_level: float,
+) -> pd.DataFrame:
+    """Apply simple anonymization/scrubbing and optional k-anonymity/noise."""
+    out = df.copy()
+
+    for col in pii_columns:
+        if col not in out.columns:
+            continue
+        if scrub_mode == "mask":
+            out[col] = out[col].astype(str).where(out[col].isna(), "REDACTED")
+        elif scrub_mode == "drop":
+            out = out.drop(columns=[col])
+
+    # Basic k-anonymity approximation for categorical columns
+    cat_cols = [c for c in out.columns if not pd.api.types.is_numeric_dtype(out[c])]
+    if k_anonymity > 1:
+        for c in cat_cols:
+            vc = out[c].astype(str).value_counts(dropna=False)
+            rare = vc[vc < k_anonymity].index
+            out[c] = out[c].astype(str).where(~out[c].astype(str).isin(rare), "__OTHER__")
+
+    # Optional numeric noise
+    if noise_level > 0:
+        num_cols = [c for c in out.columns if pd.api.types.is_numeric_dtype(out[c])]
+        for c in num_cols:
+            std = float(pd.to_numeric(out[c], errors="coerce").std() or 0.0)
+            if std <= 0:
+                continue
+            noise = np.random.normal(0, std * noise_level, size=len(out))
+            out[c] = pd.to_numeric(out[c], errors="coerce") + noise
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def generate_bootstrap_synthetic(seed_df: pd.DataFrame, target_rows: int) -> pd.DataFrame:
+    """Diffusion-style fallback using bootstrap + light perturbation."""
+    if seed_df.empty:
+        return seed_df.copy()
+    out = seed_df.sample(n=target_rows, replace=True, random_state=42).reset_index(drop=True)
+    num_cols = [c for c in out.columns if pd.api.types.is_numeric_dtype(out[c])]
+    for c in num_cols:
+        std = float(pd.to_numeric(out[c], errors="coerce").std() or 0.0)
+        if std > 0:
+            out[c] = pd.to_numeric(out[c], errors="coerce") + np.random.normal(0, std * 0.02, size=len(out))
+    return out
+
+
+def generate_sdv_synthetic(seed_df: pd.DataFrame, target_rows: int, model_type: str) -> pd.DataFrame:
+    """Generate synthetic data with CTGAN/TVAE if SDV is available."""
+    if not SDV_AVAILABLE:
+        raise RuntimeError("SDV not installed. Use fallback model or add sdv to requirements.")
+    if seed_df.empty:
+        return seed_df.copy()
+    metadata = SingleTableMetadata()
+    metadata.detect_from_dataframe(seed_df)
+    if model_type == "CTGAN":
+        synth = CTGANSynthesizer(metadata)
+    else:
+        synth = TVAESynthesizer(metadata)
+    synth.fit(seed_df)
+    out = synth.sample(num_rows=target_rows)
+    return out
+
+
+def _js_divergence_from_hist(a: np.ndarray, b: np.ndarray, bins: int = 20) -> float:
+    if len(a) == 0 or len(b) == 0:
+        return np.nan
+    low = min(np.nanmin(a), np.nanmin(b))
+    high = max(np.nanmax(a), np.nanmax(b))
+    if not np.isfinite(low) or not np.isfinite(high) or low == high:
+        return np.nan
+    p_hist, edges = np.histogram(a, bins=bins, range=(low, high), density=True)
+    q_hist, _ = np.histogram(b, bins=edges, density=True)
+    p = p_hist.astype(float) + 1e-12
+    q = q_hist.astype(float) + 1e-12
+    p = p / p.sum()
+    q = q / q.sum()
+    m = 0.5 * (p + q)
+    kl_pm = np.sum(p * np.log(p / m))
+    kl_qm = np.sum(q * np.log(q / m))
+    return float(0.5 * (kl_pm + kl_qm))
+
+
+@st.cache_data(show_spinner=False)
+def compute_fidelity_metrics(real_df: pd.DataFrame, synth_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return stage-4 scores: JS divergence, correlation similarity, utility checks."""
+    numeric_cols = [
+        c for c in real_df.columns
+        if c in synth_df.columns and pd.api.types.is_numeric_dtype(real_df[c]) and pd.api.types.is_numeric_dtype(synth_df[c])
+    ]
+    js_rows = []
+    for c in numeric_cols:
+        r = pd.to_numeric(real_df[c], errors="coerce").dropna().values
+        s = pd.to_numeric(synth_df[c], errors="coerce").dropna().values
+        js_rows.append({"column": c, "js_divergence": _js_divergence_from_hist(r, s)})
+    js_df = pd.DataFrame(js_rows)
+
+    corr_similarity = np.nan
+    if len(numeric_cols) >= 2:
+        rc = real_df[numeric_cols].corr(numeric_only=True).fillna(0.0)
+        sc = synth_df[numeric_cols].corr(numeric_only=True).fillna(0.0)
+        common = [c for c in rc.columns if c in sc.columns]
+        if len(common) >= 2:
+            diff = (rc.loc[common, common] - sc.loc[common, common]).abs().values
+            corr_similarity = float(1.0 - np.nanmean(diff))
+
+    null_rate_diff = float((real_df.isna().mean() - synth_df.isna().mean()).abs().mean())
+    uniq_ratio_real = (real_df.nunique(dropna=True) / max(len(real_df), 1)).mean()
+    uniq_ratio_synth = (synth_df.nunique(dropna=True) / max(len(synth_df), 1)).mean()
+    utility_df = pd.DataFrame(
+        [
+            {"metric": "correlation_similarity", "value": corr_similarity},
+            {"metric": "avg_null_rate_diff", "value": null_rate_diff},
+            {"metric": "unique_ratio_real", "value": float(uniq_ratio_real)},
+            {"metric": "unique_ratio_synth", "value": float(uniq_ratio_synth)},
+        ]
+    )
+    return js_df, utility_df
+
+
+def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataFrame:
+    """
+    Optional Azure AI Foundry / Azure OpenAI based generation.
+    Uses env vars:
+      AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT,
+      AZURE_OPENAI_API_VERSION (optional; default 2024-02-15-preview)
+    """
+    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
+    api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
+    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
+    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+    if not endpoint or not api_key or not deployment:
+        raise RuntimeError("Azure LLM credentials missing in environment variables.")
+
+    # Keep token-safe batch size and scale by bootstrap for very large targets.
+    llm_rows = min(target_rows, 2500)
+    schema = {c: str(seed_df[c].dtype) for c in seed_df.columns}
+    sample_rows = seed_df.head(20).fillna("").to_dict(orient="records")
+    prompt = (
+        "Generate synthetic tabular JSON records that preserve schema and distributions. "
+        "Return ONLY JSON array. "
+        f"Rows required: {llm_rows}. "
+        f"Schema: {schema}. "
+        f"Example rows: {sample_rows}."
+    )
+    body = {
+        "messages": [
+            {"role": "system", "content": "You are a synthetic data generator. Output strict JSON array only."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.4,
+        "max_tokens": 3000,
+    }
+    url = (
+        f"{endpoint}/openai/deployments/{deployment}/chat/completions"
+        f"?api-version={api_version}"
+    )
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "api-key": api_key},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    content = payload["choices"][0]["message"]["content"]
+    content = content.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    records = json.loads(content)
+    llm_df = pd.DataFrame(records)
+    # Expand to requested size with bootstrap if needed
+    if len(llm_df) < target_rows and not llm_df.empty:
+        extra = llm_df.sample(target_rows - len(llm_df), replace=True, random_state=42)
+        llm_df = pd.concat([llm_df, extra], ignore_index=True)
+    return llm_df.head(target_rows)
+
+
+def parse_seed_upload(uploaded: Any) -> pd.DataFrame:
+    """Parse CSV/JSON upload for synthetic tab seed ingestion."""
+    name = uploaded.name.lower()
+    raw = uploaded.getvalue()
+    if name.endswith(".csv"):
+        return pd.read_csv(io.BytesIO(raw))
+    if name.endswith(".json"):
+        data = json.loads(raw.decode("utf-8-sig"))
+        if isinstance(data, list):
+            return pd.json_normalize(data)
+        if isinstance(data, dict):
+            return pd.json_normalize([data])
+    raise ValueError("Unsupported seed format. Use CSV or JSON.")
+
+
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
@@ -246,6 +492,8 @@ def init_state() -> None:
         st.session_state.joined_df: pd.DataFrame | None = None
     if "join_summary" not in st.session_state:
         st.session_state.join_summary: str = ""
+    if "synthetic_df" not in st.session_state:
+        st.session_state.synthetic_df: pd.DataFrame | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +537,7 @@ def render_sidebar() -> None:
         st.session_state.file_signatures = set()
         st.session_state.joined_df = None
         st.session_state.join_summary = ""
+        st.session_state.synthetic_df = None
         st.sidebar.success("Registry cleared.")
 
 
@@ -714,6 +963,157 @@ def render_analytics_tab() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def render_synthetic_generator_tab() -> None:
+    st.markdown('<div class="block-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Synthetic Data Generator</div>', unsafe_allow_html=True)
+
+    st.markdown(
+        """```text
+1) Seed Data Ingestion -> 2) Privacy/Anonymization -> 3) Generative Engine
+4) Fidelity Scoring -> 5) Self-Service Download
+```"""
+    )
+
+    # Seed data source
+    source_options = []
+    if st.session_state.joined_df is not None and not st.session_state.joined_df.empty:
+        source_options.append("Joined dataset")
+    source_options.extend([f"Registry::{k}" for k in st.session_state.data_registry.keys()])
+    source_options.append("Upload CSV/JSON")
+
+    seed_source = st.selectbox("Seed source", source_options, key="syn_seed_source")
+    seed_df: pd.DataFrame | None = None
+
+    if seed_source == "Joined dataset":
+        seed_df = st.session_state.joined_df.copy()
+    elif seed_source.startswith("Registry::"):
+        table_name = seed_source.split("Registry::", 1)[1]
+        seed_df = st.session_state.data_registry.get(table_name)
+    else:
+        up = st.file_uploader("Upload seed file (CSV/JSON)", type=["csv", "json"], key="syn_seed_upload")
+        if up is not None:
+            try:
+                seed_df = parse_seed_upload(up)
+                st.success(f"Seed file loaded: {up.name} ({len(seed_df):,} rows)")
+            except Exception as exc:
+                st.error(str(exc))
+
+    if seed_df is None or seed_df.empty:
+        st.info("Choose a seed source to start synthetic generation.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    st.markdown("### 1) Seed Data Ingestion")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Seed rows", f"{len(seed_df):,}")
+    c2.metric("Columns", seed_df.shape[1])
+    c3.metric("Null cells", f"{int(seed_df.isna().sum().sum()):,}")
+    pii_df = detect_pii_columns(seed_df)
+    st.dataframe(pii_df, use_container_width=True, height=210)
+
+    st.markdown("### 2) Privacy & Anonymization")
+    pii_candidates = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
+    selected_pii = st.multiselect(
+        "PII columns to scrub",
+        options=list(seed_df.columns),
+        default=pii_candidates,
+        key="syn_pii_cols",
+    )
+    p1, p2, p3 = st.columns(3)
+    scrub_mode = p1.selectbox("PII scrubbing", ["mask", "drop"], key="syn_scrub")
+    k_anon = int(p2.number_input("k-anonymity (approx)", min_value=1, max_value=50, value=3, step=1))
+    noise_level = float(p3.slider("Numeric noise", 0.0, 0.5, 0.02, 0.01))
+    private_df = apply_privacy_transform(
+        seed_df,
+        tuple(selected_pii),
+        scrub_mode,
+        k_anon,
+        noise_level,
+    )
+    st.caption(f"Post-privacy shape: {private_df.shape[0]:,} x {private_df.shape[1]}")
+
+    st.markdown("### 3) Generative Engine")
+    g1, g2 = st.columns(2)
+    model_choice = g1.selectbox(
+        "Generation model",
+        [
+            "CTGAN (GAN)",
+            "TVAE",
+            "Diffusion-style bootstrap",
+            "Azure LLM (AI Foundry)",
+        ],
+        key="syn_model_choice",
+    )
+    target_rows = int(
+        g2.number_input(
+            "Target synthetic rows",
+            min_value=max(10, len(private_df)),
+            max_value=1_000_000,
+            value=min(max(10, len(private_df) * 10), 100_000),
+            step=100,
+            key="syn_target_rows",
+        )
+    )
+
+    if model_choice in ("CTGAN (GAN)", "TVAE") and not SDV_AVAILABLE:
+        st.warning("SDV package not available. Install `sdv` in requirements or use fallback models.")
+
+    generate_btn = st.button("Generate Synthetic Data", type="primary", key="syn_generate_btn")
+    synthetic_df: pd.DataFrame | None = st.session_state.get("synthetic_df")
+
+    if generate_btn:
+        try:
+            with st.spinner("Generating synthetic data..."):
+                if model_choice == "CTGAN (GAN)":
+                    synthetic_df = generate_sdv_synthetic(private_df, target_rows, "CTGAN")
+                elif model_choice == "TVAE":
+                    synthetic_df = generate_sdv_synthetic(private_df, target_rows, "TVAE")
+                elif model_choice == "Azure LLM (AI Foundry)":
+                    synthetic_df = generate_with_azure_llm(private_df, target_rows)
+                else:
+                    synthetic_df = generate_bootstrap_synthetic(private_df, target_rows)
+            st.session_state.synthetic_df = synthetic_df
+            st.success(f"Synthetic dataset generated: {len(synthetic_df):,} rows")
+            st.toast("Synthetic generation complete.")
+        except Exception as exc:
+            st.error(f"Generation failed: {exc}")
+
+    synthetic_df = st.session_state.get("synthetic_df")
+    if synthetic_df is not None and not synthetic_df.empty:
+        st.markdown("### 4) Fidelity Scoring Engine")
+        js_df, utility_df = compute_fidelity_metrics(private_df, synthetic_df)
+        s1, s2 = st.columns(2)
+        with s1:
+            st.markdown("**JS Divergence (numeric columns)**")
+            st.dataframe(js_df, use_container_width=True, height=220)
+        with s2:
+            st.markdown("**Correlation / Utility checks**")
+            st.dataframe(utility_df, use_container_width=True, height=220)
+
+        st.markdown("### 5) Self-Service Download")
+        preview_rows = int(
+            st.number_input(
+                "Rows to preview (synthetic)",
+                min_value=1,
+                max_value=max(1, len(synthetic_df)),
+                value=min(30, len(synthetic_df)),
+                step=1,
+                key="syn_preview_rows",
+            )
+        )
+        st.dataframe(synthetic_df.head(preview_rows), use_container_width=True, height=240)
+        csv_bytes = synthetic_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Download synthetic dataset (CSV)",
+            data=csv_bytes,
+            file_name="synthetic_dataset.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 # ---------------------------------------------------------------------------
 # App entry
 # ---------------------------------------------------------------------------
@@ -737,8 +1137,8 @@ def main() -> None:
     else:
         st.caption(f"Notebook export warning: `{nb_msg}`")
 
-    tab_preview, tab_join, tab_analytics = st.tabs(
-        ["Data Preview", "Join Builder", "Analytics"]
+    tab_preview, tab_join, tab_analytics, tab_synth = st.tabs(
+        ["Data Preview", "Join Builder", "Analytics", "Synthetic Data Generator"]
     )
 
     with tab_preview:
@@ -749,6 +1149,9 @@ def main() -> None:
 
     with tab_analytics:
         render_analytics_tab()
+
+    with tab_synth:
+        render_synthetic_generator_tab()
 
 
 if __name__ == "__main__":
