@@ -1454,7 +1454,7 @@ def render_synthetic_generator_tab() -> None:
 
 def render_data_bot_tab() -> None:
     st.markdown('<div class="block-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">Data Bot</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">AI Astra</div>', unsafe_allow_html=True)
     st.caption("Describe the dataset you want (e.g., inventory, credit-risk DPD, loan ledger).")
 
     request_text = st.text_area(
@@ -1473,7 +1473,7 @@ def render_data_bot_tab() -> None:
             key="bot_target_rows",
         )
     )
-    generate_btn = st.button("Generate from Bot Prompt", type="primary", key="bot_generate_btn")
+    generate_btn = st.button("Generate", type="primary", key="bot_generate_btn")
 
     if generate_btn:
         try:
@@ -1481,7 +1481,7 @@ def render_data_bot_tab() -> None:
                 df = generate_tabular_from_prompt(request_text, target_rows)
             st.session_state.bot_generated_df = df
             st.success(f"Generated {len(df):,} rows and {df.shape[1]} columns.")
-            st.toast("Data Bot generation complete.")
+            st.toast("AI Astra generation complete.")
         except Exception as exc:
             st.error(f"Generation failed: {exc}")
 
@@ -1642,15 +1642,23 @@ def main() -> None:
 
     ok_nb, nb_msg = save_notebook_to_path(NOTEBOOK_OUTPUT_PATH)
 
-    st.markdown(f"## {BRAND_NAME} — Multi-File Data Joiner & Analytics Dashboard")
-    st.caption("Professional workspace for loading, joining, and exploring data.")
-    if ok_nb:
-        st.caption(f"Notebook exported: `{nb_msg}`")
-    else:
-        st.caption(f"Notebook export warning: `{nb_msg}`")
+    st.markdown(
+        """
+        <div style="padding: 0.25rem 0 0.9rem 0;">
+            <div style="font-size: 2rem; font-weight: 800; letter-spacing: 0.2px; color: #1f2937;">
+                The Synthetic Data Generator
+                <span style="color: #FFB347;">- by The Outliers</span>
+            </div>
+            <div style="margin-top: 0.25rem; color: #6b7280; font-size: 0.98rem;">
+                Enterprise-grade workspace for profiling, joining, and generating synthetic datasets.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     tab_preview, tab_join, tab_analytics, tab_synth, tab_bot = st.tabs(
-        ["Data Preview", "Join Builder", "Analytics", "Synthetic Data Generator", "Data Bot"]
+        ["Data Preview", "Join Builder", "Analytics", "Synthetic Data Generator", "AI Astra"]
     )
 
     with tab_preview:
