@@ -425,6 +425,19 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
     if not endpoint or not api_key:
         raise RuntimeError("Azure LLM credentials missing in environment variables.")
 
+    # Support both endpoint forms:
+    # - https://<name>.openai.azure.com
+    # - https://<name>.openai.azure.com/openai/v1
+    if endpoint.endswith("/openai/v1"):
+        endpoint_base = endpoint[: -len("/openai/v1")]
+        endpoint_v1 = endpoint
+    elif endpoint.endswith("/openai/v1/"):
+        endpoint_base = endpoint[: -len("/openai/v1/")]
+        endpoint_v1 = endpoint.rstrip("/")
+    else:
+        endpoint_base = endpoint
+        endpoint_v1 = f"{endpoint_base}/openai/v1"
+
     # Keep token-safe batch size and scale by bootstrap for very large targets.
     llm_rows = min(target_rows, 2500)
     schema = {c: str(seed_df[c].dtype) for c in seed_df.columns}
@@ -479,7 +492,7 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
             "max_tokens": 3000,
         }
         url = (
-            f"{endpoint}/openai/deployments/{deployment}/chat/completions"
+            f"{endpoint_base}/openai/deployments/{deployment}/chat/completions"
             f"?api-version={api_version}"
         )
         payload = _post_json(url, body)
@@ -492,12 +505,7 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
         else:
             agent_name, agent_version = agent_id, "1"
 
-        if endpoint.endswith("/openai/v1"):
-            responses_url = f"{endpoint}/responses"
-        elif "/openai/v1/" in endpoint or endpoint.endswith("/openai/v1/"):
-            responses_url = f"{endpoint.rstrip('/')}/responses"
-        else:
-            responses_url = f"{endpoint}/openai/v1/responses"
+        responses_url = f"{endpoint_v1}/responses"
 
         base_input = {"input": [{"role": "user", "content": prompt}]}
         # Azure surfaces may expect either top-level `agent_reference` or SDK-style `extra_body`.
