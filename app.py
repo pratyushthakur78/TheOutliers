@@ -204,6 +204,39 @@ def inject_theme() -> None:
     font-weight: 600 !important;
   }}
   .stButton > button[kind="primary"]:hover {{ background: #e59a3a !important; }}
+  .stTabs [data-baseweb="tab-list"] {{
+    gap: 0.4rem;
+    background: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(255,250,243,0.92));
+    border: 1px solid #eedec8;
+    border-radius: 999px;
+    padding: 0.34rem;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.75), 0 6px 14px rgba(17,24,39,0.05);
+  }}
+  .stTabs [data-baseweb="tab"] {{
+    border-radius: 999px !important;
+    border: 1px solid transparent !important;
+    background: rgba(255,255,255,0.65) !important;
+    color: #4b5563 !important;
+    font-weight: 600 !important;
+    min-height: 2.2rem !important;
+    padding: 0.2rem 0.95rem !important;
+    transition: all 0.18s ease;
+  }}
+  .stTabs [data-baseweb="tab"]:hover {{
+    border-color: #f2d2a6 !important;
+    background: rgba(255,247,235,0.95) !important;
+    color: #1f2937 !important;
+  }}
+  .stTabs [aria-selected="true"] {{
+    background: linear-gradient(145deg, #ffd9a1 0%, #ffbe66 85%) !important;
+    color: #1f2937 !important;
+    border-color: #f2b357 !important;
+    box-shadow: 0 8px 18px rgba(245, 158, 11, 0.28), inset 0 1px 0 rgba(255,255,255,0.65);
+  }}
+  .stTabs [data-baseweb="tab-highlight"] {{
+    background: transparent !important;
+    height: 0 !important;
+  }}
   div[data-testid="stExpander"] {{ border: 1px solid #e5e7eb; border-radius: 8px; background: #fafafa; }}
 </style>
 """,
