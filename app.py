@@ -640,6 +640,181 @@ def parse_seed_upload(uploaded: Any) -> pd.DataFrame:
     raise ValueError("Unsupported seed format. Use CSV or JSON.")
 
 
+def _normalize_azure_endpoint(endpoint: str) -> tuple[str, str]:
+    endpoint = endpoint.rstrip("/")
+    if endpoint.endswith("/openai/v1"):
+        base = endpoint[: -len("/openai/v1")]
+        v1 = endpoint
+    elif endpoint.endswith("/openai/v1/"):
+        base = endpoint[: -len("/openai/v1/")]
+        v1 = endpoint.rstrip("/")
+    else:
+        base = endpoint
+        v1 = f"{base}/openai/v1"
+    return base, v1
+
+
+def _extract_json_array_text(text: str) -> str:
+    cleaned = text.strip()
+    cleaned = cleaned.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    if "[" in cleaned and "]" in cleaned:
+        s = cleaned.find("[")
+        e = cleaned.rfind("]")
+        if s != -1 and e != -1 and e > s:
+            return cleaned[s : e + 1]
+    return cleaned
+
+
+def _parse_llm_tabular_output(text: str) -> pd.DataFrame:
+    content = _extract_json_array_text(text)
+    try:
+        obj = json.loads(content)
+        if isinstance(obj, list):
+            return pd.DataFrame(obj)
+        if isinstance(obj, dict):
+            return pd.json_normalize([obj])
+    except Exception:
+        pass
+    # Fallback: treat as CSV-like response
+    try:
+        return pd.read_csv(io.StringIO(text))
+    except Exception as e:
+        raise RuntimeError(f"Could not parse tabular output from model. Raw starts with: {text[:180]}") from e
+
+
+def generate_tabular_from_prompt(user_prompt: str, target_rows: int) -> pd.DataFrame:
+    """
+    Generate tabular data from free-text requirement using Azure Agent / deployment.
+    """
+    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
+    api_key = os.getenv("AZURE_OPENAI_API_KEY", "") or os.getenv("AZURE_API_KEY", "")
+    deployment = (
+        os.getenv("AZURE_OPENAI_DEPLOYMENT", "").strip()
+        or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "").strip()
+        or os.getenv("MODEL_DEPLOYMENT_NAME", "").strip()
+    )
+    agent_id = os.getenv("AZURE_EXISTING_AGENT_ID", "").strip()
+    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+    if not endpoint or not api_key:
+        raise RuntimeError("Missing Azure endpoint/API key in environment variables.")
+    endpoint_base, endpoint_v1 = _normalize_azure_endpoint(endpoint)
+
+    generation_prompt = (
+        "Generate realistic synthetic tabular data.\n"
+        f"Business request: {user_prompt}\n"
+        f"Rows required: {target_rows}\n"
+        "Output strict JSON array only. No markdown, no explanation.\n"
+        "Ensure coherent schema, realistic distributions, and valid cross-column consistency."
+    )
+
+    def _post_json(url: str, body: dict[str, Any]) -> dict[str, Any]:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", "api-key": api_key},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raw = ""
+            try:
+                raw = e.read().decode("utf-8")
+            except Exception:
+                raw = str(e)
+            raise RuntimeError(f"Azure API HTTP {e.code}: {raw}") from e
+
+    def _text_from_responses_payload(payload: dict[str, Any]) -> str:
+        txt = payload.get("output_text", "")
+        if txt:
+            return txt
+        output = payload.get("output", [])
+        if output and isinstance(output, list):
+            parts = []
+            for item in output:
+                for c in item.get("content", []) if isinstance(item, dict) else []:
+                    t = c.get("text")
+                    if t:
+                        parts.append(t)
+            return "\n".join(parts).strip()
+        return ""
+
+    def _deployment_text() -> str:
+        if not deployment:
+            raise RuntimeError("AZURE_OPENAI_DEPLOYMENT is required for deployment fallback.")
+        # responses first
+        try:
+            payload = _post_json(
+                f"{endpoint_v1}/responses",
+                {
+                    "model": deployment,
+                    "input": [{"role": "user", "content": generation_prompt}],
+                    "temperature": 0.5,
+                },
+            )
+            txt = _text_from_responses_payload(payload)
+            if txt:
+                return txt
+        except Exception:
+            pass
+
+        # chat completions fallback
+        payload = _post_json(
+            f"{endpoint_base}/openai/deployments/{deployment}/chat/completions?api-version={api_version}",
+            {
+                "messages": [
+                    {"role": "system", "content": "Output strict JSON array only."},
+                    {"role": "user", "content": generation_prompt},
+                ],
+                "temperature": 0.5,
+                "max_tokens": 3500,
+            },
+        )
+        return payload["choices"][0]["message"]["content"]
+
+    model_text = ""
+    if agent_id:
+        if ":" in agent_id:
+            agent_name, agent_version = agent_id.split(":", 1)
+        else:
+            agent_name, agent_version = agent_id, "1"
+        reqs = [
+            {
+                "input": [{"role": "user", "content": generation_prompt}],
+                "agent_reference": {"name": agent_name, "version": agent_version, "type": "agent_reference"},
+                **({"model": deployment} if deployment else {}),
+            },
+            {
+                "input": [{"role": "user", "content": generation_prompt}],
+                "extra_body": {
+                    "agent_reference": {"name": agent_name, "version": agent_version, "type": "agent_reference"}
+                },
+                **({"model": deployment} if deployment else {}),
+            },
+        ]
+        for body in reqs:
+            try:
+                payload = _post_json(f"{endpoint_v1}/responses", body)
+                model_text = _text_from_responses_payload(payload)
+                if model_text:
+                    break
+            except Exception:
+                continue
+        if not model_text:
+            model_text = _deployment_text()
+    else:
+        model_text = _deployment_text()
+
+    out = _parse_llm_tabular_output(model_text)
+    if out.empty:
+        raise RuntimeError("Model returned empty dataset.")
+    if len(out) < target_rows:
+        extra = out.sample(target_rows - len(out), replace=True, random_state=42)
+        out = pd.concat([out, extra], ignore_index=True)
+    return out.head(target_rows)
+
+
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
@@ -654,6 +829,8 @@ def init_state() -> None:
         st.session_state.join_summary: str = ""
     if "synthetic_df" not in st.session_state:
         st.session_state.synthetic_df: pd.DataFrame | None = None
+    if "bot_generated_df" not in st.session_state:
+        st.session_state.bot_generated_df: pd.DataFrame | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -698,6 +875,7 @@ def render_sidebar() -> None:
         st.session_state.joined_df = None
         st.session_state.join_summary = ""
         st.session_state.synthetic_df = None
+        st.session_state.bot_generated_df = None
         st.sidebar.success("Registry cleared.")
 
 
@@ -1274,6 +1452,180 @@ def render_synthetic_generator_tab() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def render_data_bot_tab() -> None:
+    st.markdown('<div class="block-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Data Bot</div>', unsafe_allow_html=True)
+    st.caption("Describe the dataset you want (e.g., inventory, credit-risk DPD, loan ledger).")
+
+    request_text = st.text_area(
+        "Describe required data",
+        value="Generate credit-risk DPD data with customer_id, loan_id, dpd_bucket, exposure, region, segment, delinquency_date.",
+        height=120,
+        key="bot_request_text",
+    )
+    target_rows = int(
+        st.number_input(
+            "Rows to generate",
+            min_value=10,
+            max_value=1_000_000,
+            value=1000,
+            step=100,
+            key="bot_target_rows",
+        )
+    )
+    generate_btn = st.button("Generate from Bot Prompt", type="primary", key="bot_generate_btn")
+
+    if generate_btn:
+        try:
+            with st.spinner("Bot is generating tabular data..."):
+                df = generate_tabular_from_prompt(request_text, target_rows)
+            st.session_state.bot_generated_df = df
+            st.success(f"Generated {len(df):,} rows and {df.shape[1]} columns.")
+            st.toast("Data Bot generation complete.")
+        except Exception as exc:
+            st.error(f"Generation failed: {exc}")
+
+    bot_df = st.session_state.get("bot_generated_df")
+    if bot_df is not None and not bot_df.empty:
+        st.markdown('<div class="minor-title">Generated Dataset</div>', unsafe_allow_html=True)
+        preview_rows = int(
+            st.number_input(
+                "Rows to preview",
+                min_value=1,
+                max_value=max(1, len(bot_df)),
+                value=min(25, len(bot_df)),
+                step=1,
+                key="bot_preview_rows",
+            )
+        )
+        st.dataframe(bot_df.head(preview_rows), use_container_width=True, height=240)
+        st.download_button(
+            "Download generated data (CSV)",
+            data=bot_df.to_csv(index=False).encode("utf-8"),
+            file_name="bot_generated_data.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="bot_download_csv",
+        )
+
+        # Full quality/report sections (same style as preview/analytics)
+        dtypes_df = pd.DataFrame(
+            {
+                "column": bot_df.columns,
+                "dtype": [str(t) for t in bot_df.dtypes],
+                "total_records": [len(bot_df)] * len(bot_df.columns),
+                "null_count": bot_df.isna().sum().values,
+                "non_null_count": bot_df.notna().sum().values,
+            }
+        )
+        if len(bot_df) > 0:
+            dtypes_df["fill_rate_%"] = (
+                (dtypes_df["non_null_count"] / dtypes_df["total_records"]) * 100
+            ).round(2)
+            dtypes_df["missing_rate_%"] = (
+                (dtypes_df["null_count"] / dtypes_df["total_records"]) * 100
+            ).round(2)
+        else:
+            dtypes_df["fill_rate_%"] = 0.0
+            dtypes_df["missing_rate_%"] = 0.0
+
+        left_col, right_col = st.columns(2)
+        chart_key_base = "bot_generated"
+        with left_col:
+            st.markdown('<div class="minor-title">Schema & Null Summary</div>', unsafe_allow_html=True)
+            st.dataframe(dtypes_df, use_container_width=True, height=480)
+
+        with right_col:
+            st.markdown('<div class="minor-title">Quick Graph Builder</div>', unsafe_allow_html=True)
+            all_cols = list(bot_df.columns)
+            numeric_cols = [c for c in all_cols if pd.api.types.is_numeric_dtype(bot_df[c])]
+            graph_options = ["Bar", "Line", "Scatter", "Histogram", "Box", "Pie", "Bar Count"]
+            graph_type = st.selectbox("Graph", graph_options, key=f"bot_graph_{chart_key_base}")
+            x_axis = st.selectbox("X Axis", all_cols, key=f"bot_x_{chart_key_base}")
+            y_axis = st.selectbox(
+                "Y Axis", ["(auto/count)"] + numeric_cols, key=f"bot_y_{chart_key_base}"
+            )
+            y_col = None if y_axis == "(auto/count)" else y_axis
+            graph_df = bot_df.head(1000).copy()
+            fig = None
+            if graph_type == "Bar":
+                if y_col:
+                    fig = px.bar(graph_df, x=x_axis, y=y_col, color_discrete_sequence=[ACCENT])
+                else:
+                    vc = graph_df[x_axis].astype(str).value_counts().head(25)
+                    fig = px.bar(
+                        x=vc.index, y=vc.values, labels={"x": x_axis, "y": "count"},
+                        color=vc.values, color_continuous_scale="Oranges"
+                    )
+            elif graph_type == "Line":
+                if y_col:
+                    fig = px.line(graph_df, x=x_axis, y=y_col, markers=True)
+                else:
+                    st.info("Select a numeric Y Axis for Line chart.")
+            elif graph_type == "Scatter":
+                if y_col:
+                    fig = px.scatter(graph_df, x=x_axis, y=y_col)
+                else:
+                    st.info("Select a numeric Y Axis for Scatter chart.")
+            elif graph_type == "Histogram":
+                fig = px.histogram(graph_df, x=x_axis, color_discrete_sequence=[ACCENT])
+            elif graph_type == "Box":
+                target = y_col or x_axis
+                if target in numeric_cols:
+                    fig = px.box(graph_df, y=target, color_discrete_sequence=[ACCENT])
+                else:
+                    st.info("Box chart requires a numeric axis.")
+            elif graph_type == "Bar Count":
+                vc = graph_df[x_axis].astype(str).value_counts().head(25)
+                fig = px.bar(
+                    x=vc.index, y=vc.values, labels={"x": x_axis, "y": "count"},
+                    color=vc.values, color_continuous_scale="Oranges"
+                )
+            elif graph_type == "Pie":
+                if y_col:
+                    fig = px.pie(graph_df, names=x_axis, values=y_col, color_discrete_sequence=px.colors.sequential.Oranges)
+                else:
+                    vc = graph_df[x_axis].astype(str).value_counts().head(20)
+                    fig = px.pie(values=vc.values, names=vc.index, color_discrete_sequence=px.colors.sequential.Oranges)
+
+            if fig is not None:
+                fig.update_layout(
+                    paper_bgcolor="rgba(255,255,255,0)",
+                    plot_bgcolor="rgba(255,255,255,0.75)",
+                    font=dict(family="Inter", color="#1f2937"),
+                    margin=dict(t=30, l=20, r=20, b=20),
+                    height=320,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown('<div class="block-card">', unsafe_allow_html=True)
+        st.markdown('<div class="minor-title">Raw Data Sample</div>', unsafe_allow_html=True)
+        rows_to_show = int(
+            st.number_input(
+                "Rows to display",
+                min_value=1,
+                max_value=max(1, len(bot_df)),
+                value=min(25, len(bot_df)),
+                step=1,
+                key="bot_raw_rows",
+            )
+        )
+        st.dataframe(bot_df.head(rows_to_show), use_container_width=True, height=220)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown('<div class="block-card">', unsafe_allow_html=True)
+        st.markdown('<div class="minor-title">Column Statistics</div>', unsafe_allow_html=True)
+        stats_df = build_column_statistics(bot_df)
+        numeric_cols_stats = ["mean", "min", "max", "5%", "10%", "20%", "30%", "50%", "70%", "80%", "90%", "95%"]
+        for c in numeric_cols_stats:
+            if c in stats_df.columns:
+                stats_df[c] = pd.to_numeric(stats_df[c], errors="coerce").round(4)
+        st.dataframe(stats_df, use_container_width=True, height=320)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 # ---------------------------------------------------------------------------
 # App entry
 # ---------------------------------------------------------------------------
@@ -1297,8 +1649,8 @@ def main() -> None:
     else:
         st.caption(f"Notebook export warning: `{nb_msg}`")
 
-    tab_preview, tab_join, tab_analytics, tab_synth = st.tabs(
-        ["Data Preview", "Join Builder", "Analytics", "Synthetic Data Generator"]
+    tab_preview, tab_join, tab_analytics, tab_synth, tab_bot = st.tabs(
+        ["Data Preview", "Join Builder", "Analytics", "Synthetic Data Generator", "Data Bot"]
     )
 
     with tab_preview:
@@ -1312,6 +1664,9 @@ def main() -> None:
 
     with tab_synth:
         render_synthetic_generator_tab()
+
+    with tab_bot:
+        render_data_bot_tab()
 
 
 if __name__ == "__main__":
