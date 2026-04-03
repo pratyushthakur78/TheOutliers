@@ -92,10 +92,88 @@ def inject_theme() -> None:
   html, body, [class*="css"] {{ font-family: 'Inter', system-ui, sans-serif !important; }}
   .stApp {{ background: #f5f7fb !important; color: #1f2937; }}
   [data-testid="stSidebar"] {{
-    background: linear-gradient(180deg, rgba(255,179,71,0.18), rgba(255,179,71,0.07));
-    border-right: 2px solid rgba(255,179,71,0.45);
+    background: linear-gradient(180deg, #fffdf8 0%, #fff8ee 45%, #fffdf9 100%);
+    border-right: 1px solid #f3dfc6;
+  }}
+  [data-testid="stSidebar"] > div:first-child {{
+    padding-top: 1rem;
   }}
   [data-testid="stHeader"] {{ background: #ffffff !important; border-bottom: 1px solid #e5e7eb; }}
+  .sidebar-hero {{
+    background: linear-gradient(135deg, #fff7ea 0%, #fff2de 65%, #ffefd4 100%);
+    border: 1px solid #f1d4ad;
+    border-radius: 12px;
+    padding: 0.85rem 0.8rem 0.7rem 0.8rem;
+    margin-bottom: 0.75rem;
+    box-shadow: 0 6px 18px rgba(179, 118, 42, 0.08);
+  }}
+  .sidebar-kicker {{
+    font-size: 0.67rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #a16207;
+    margin-bottom: 0.2rem;
+  }}
+  .sidebar-title {{
+    font-size: 1.15rem;
+    font-weight: 800;
+    color: #111827;
+    line-height: 1.2;
+  }}
+  .sidebar-subtitle {{
+    margin-top: 0.2rem;
+    color: #6b7280;
+    font-size: 0.82rem;
+  }}
+  .sidebar-card {{
+    background: #ffffff;
+    border: 1px solid #efdfc8;
+    border-radius: 12px;
+    padding: 0.65rem 0.65rem 0.45rem 0.65rem;
+    margin-bottom: 0.65rem;
+    box-shadow: 0 4px 12px rgba(17, 24, 39, 0.04);
+  }}
+  .sidebar-card-title {{
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #b45309;
+    margin-bottom: 0.35rem;
+  }}
+  .sidebar-helper {{
+    color: #6b7280;
+    font-size: 0.76rem;
+    margin-top: 0.3rem;
+  }}
+  [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {{
+    border: 1.2px dashed #f1c27d !important;
+    background: #fffaf2 !important;
+    border-radius: 10px !important;
+  }}
+  [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"]:hover {{
+    border-color: #e59a3a !important;
+    background: #fff4e5 !important;
+  }}
+  .sidebar-reg-item {{
+    border: 1px solid #f1eadf;
+    background: #fffdfa;
+    border-radius: 8px;
+    padding: 0.32rem 0.45rem;
+    margin-bottom: 0.3rem;
+    color: #374151;
+    font-size: 0.76rem;
+    word-break: break-word;
+  }}
+  .sidebar-empty {{
+    border: 1px dashed #edd7b8;
+    background: #fffaf2;
+    color: #6b7280;
+    border-radius: 8px;
+    padding: 0.45rem 0.55rem;
+    font-size: 0.76rem;
+  }}
   .block-card {{
     background: #ffffff;
     border: 1px solid #e5e7eb;
@@ -837,14 +915,33 @@ def init_state() -> None:
 # Sidebar control plane
 # ---------------------------------------------------------------------------
 def render_sidebar() -> None:
-    st.sidebar.markdown(f"### {BRAND_NAME}")
-    st.sidebar.caption("Multi-File Data Joiner")
+    st.sidebar.markdown(
+        f"""
+        <div class="sidebar-hero">
+            <div class="sidebar-kicker">Workspace</div>
+            <div class="sidebar-title">{BRAND_NAME}</div>
+            <div class="sidebar-subtitle">Multi-File Data Joiner</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
+    st.sidebar.markdown('<div class="sidebar-card">', unsafe_allow_html=True)
+    st.sidebar.markdown(
+        '<div class="sidebar-card-title">Upload CSV / Excel files</div>',
+        unsafe_allow_html=True,
+    )
     uploads = st.sidebar.file_uploader(
         "Upload CSV / Excel files",
         type=["csv", "xlsx", "xls"],
         accept_multiple_files=True,
+        label_visibility="collapsed",
     )
+    st.sidebar.markdown(
+        '<div class="sidebar-helper">200MB per file • CSV, XLSX, XLS</div>',
+        unsafe_allow_html=True,
+    )
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
     if uploads:
         for file_obj in uploads:
@@ -860,14 +957,20 @@ def render_sidebar() -> None:
             except Exception as exc:
                 st.sidebar.error(f"{file_obj.name}: {exc}")
 
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**Data Registry**")
+    st.sidebar.markdown('<div class="sidebar-card">', unsafe_allow_html=True)
+    st.sidebar.markdown('<div class="sidebar-card-title">Data Registry</div>', unsafe_allow_html=True)
 
     if not st.session_state.data_registry:
-        st.sidebar.info("No files uploaded yet.")
+        st.sidebar.markdown(
+            '<div class="sidebar-empty">No files uploaded yet.</div>',
+            unsafe_allow_html=True,
+        )
     else:
         for table_name in st.session_state.data_registry.keys():
-            st.sidebar.caption(f"- {table_name}")
+            st.sidebar.markdown(
+                f'<div class="sidebar-reg-item">{table_name}</div>',
+                unsafe_allow_html=True,
+            )
 
     if st.sidebar.button("Clear Registry", use_container_width=True):
         st.session_state.data_registry = {}
@@ -877,6 +980,7 @@ def render_sidebar() -> None:
         st.session_state.synthetic_df = None
         st.session_state.bot_generated_df = None
         st.sidebar.success("Registry cleared.")
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
