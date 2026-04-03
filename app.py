@@ -1791,9 +1791,6 @@ def render_synthetic_generator_tab() -> None:
                 )
             )
 
-    if model_choice in ("CTGAN (GAN)", "TVAE") and not SDV_AVAILABLE:
-        st.warning("SDV package not available. Install `sdv` in requirements or use fallback models.")
-
     generate_btn = st.button("Generate Synthetic Data", type="primary", key="syn_generate_btn")
     synthetic_df: pd.DataFrame | None = st.session_state.get("synthetic_df")
 
@@ -1801,9 +1798,17 @@ def render_synthetic_generator_tab() -> None:
         try:
             with st.spinner("Generating synthetic data..."):
                 if model_choice == "CTGAN (GAN)":
-                    synthetic_df = generate_sdv_synthetic(private_df, target_rows, "CTGAN")
+                    if SDV_AVAILABLE:
+                        synthetic_df = generate_sdv_synthetic(private_df, target_rows, "CTGAN")
+                    else:
+                        st.info("SDV is not available; using Diffusion-style bootstrap fallback.")
+                        synthetic_df = generate_bootstrap_synthetic(private_df, target_rows)
                 elif model_choice == "TVAE":
-                    synthetic_df = generate_sdv_synthetic(private_df, target_rows, "TVAE")
+                    if SDV_AVAILABLE:
+                        synthetic_df = generate_sdv_synthetic(private_df, target_rows, "TVAE")
+                    else:
+                        st.info("SDV is not available; using Diffusion-style bootstrap fallback.")
+                        synthetic_df = generate_bootstrap_synthetic(private_df, target_rows)
                 elif model_choice == "AI Astra":
                     synthetic_df = generate_with_azure_llm(
                         private_df,
