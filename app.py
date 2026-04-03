@@ -647,7 +647,11 @@ def compute_fidelity_metrics(real_df: pd.DataFrame, synth_df: pd.DataFrame) -> t
     return js_df, utility_df
 
 
-def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataFrame:
+def generate_with_azure_llm(
+    seed_df: pd.DataFrame,
+    target_rows: int,
+    custom_instruction: str = "",
+) -> pd.DataFrame:
     """
     Optional Azure AI Foundry / Azure OpenAI based generation.
     Uses env vars:
@@ -690,6 +694,8 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
         f"Schema: {schema}. "
         f"Example rows: {sample_rows}."
     )
+    if custom_instruction.strip():
+        prompt += f" Additional user instruction: {custom_instruction.strip()}."
     def _extract_json_content(text: str) -> str:
         cleaned = text.strip()
         cleaned = cleaned.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
@@ -860,6 +866,88 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
         extra = llm_df.sample(target_rows - len(llm_df), replace=True, random_state=42)
         llm_df = pd.concat([llm_df, extra], ignore_index=True)
     return llm_df.head(target_rows)
+
+
+@st.cache_data(show_spinner=False)
+def align_synthetic_to_seed_distribution(seed_df: pd.DataFrame, synthetic_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Align synthetic output closer to seed distributions.
+    - Numeric: rank-based quantile mapping to seed values.
+    - Non-numeric: resample from seed frequency distribution.
+    """
+    out = synthetic_df.copy()
+    if out.empty or seed_df.empty:
+        return out
+
+    rng = np.random.default_rng(42)
+    common_cols = [c for c in out.columns if c in seed_df.columns]
+
+    for col in common_cols:
+        seed_s = seed_df[col]
+        out_s = out[col]
+
+        if pd.api.types.is_numeric_dtype(seed_s):
+            seed_num = pd.to_numeric(seed_s, errors="coerce").dropna()
+            out_num = pd.to_numeric(out_s, errors="coerce")
+            if seed_num.empty:
+                continue
+            valid_mask = out_num.notna()
+            if valid_mask.any():
+                ranks = out_num[valid_mask].rank(method="average", pct=True).clip(0.0, 1.0)
+                mapped = np.quantile(seed_num.values, ranks.values)
+                out.loc[valid_mask, col] = mapped
+        elif pd.api.types.is_datetime64_any_dtype(seed_s):
+            seed_dt = pd.to_datetime(seed_s, errors="coerce").dropna()
+            if not seed_dt.empty:
+                sampled = rng.choice(seed_dt.values, size=len(out), replace=True)
+                out[col] = pd.to_datetime(sampled, errors="coerce")
+        else:
+            seed_cat = seed_s.astype(str).fillna("NA_TOKEN")
+            vc = seed_cat.value_counts(dropna=False)
+            if not vc.empty:
+                probs = (vc / vc.sum()).values
+                sampled = rng.choice(vc.index.values, size=len(out), replace=True, p=probs)
+                out[col] = pd.Series(sampled).replace("NA_TOKEN", np.nan)
+
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def add_skew_for_stress_testing(df: pd.DataFrame, skew_strength: float) -> pd.DataFrame:
+    """Create intentionally skewed/noisy data for stress-testing pipelines/models."""
+    out = df.copy()
+    if out.empty:
+        return out
+
+    rng = np.random.default_rng(42)
+    num_cols = [c for c in out.columns if pd.api.types.is_numeric_dtype(out[c])]
+    for c in num_cols:
+        s = pd.to_numeric(out[c], errors="coerce")
+        valid_mask = s.notna()
+        if not valid_mask.any():
+            continue
+
+        s_valid = s[valid_mask]
+        min_val = float(s_valid.min())
+        shifted = (s_valid - min_val) + 1e-6
+        power = 1.0 + float(skew_strength)
+        skewed = np.power(shifted, power) + min_val
+
+        # Add sparse outliers to mimic heavy-tailed behaviour.
+        outlier_mask = rng.random(len(skewed)) < (0.01 + 0.03 * skew_strength)
+        if outlier_mask.any():
+            skewed[outlier_mask] = skewed[outlier_mask] * (1.5 + (2.5 * skew_strength))
+
+        s.loc[valid_mask] = skewed
+        out[c] = s
+
+    # Inject small random missingness bump for robustness checks.
+    miss_rate = 0.005 + (0.02 * skew_strength)
+    for c in out.columns:
+        m = rng.random(len(out)) < miss_rate
+        out.loc[m, c] = np.nan
+
+    return out
 
 
 def parse_seed_upload(uploaded: Any) -> pd.DataFrame:
@@ -1673,6 +1761,32 @@ def render_synthetic_generator_tab() -> None:
             key="syn_target_rows",
         )
     )
+    user_instruction = st.text_area(
+        "Custom generation instruction (optional)",
+        value="",
+        height=90,
+        key="syn_user_instruction",
+        help="Add business-specific rules, edge cases, or extra fields to guide generation.",
+    )
+    p_mode1, p_mode2 = st.columns(2)
+    profile_mode = p_mode1.selectbox(
+        "Distribution profile",
+        ["Normalized (seed-aligned)", "Skewed (stress-test)"],
+        key="syn_distribution_profile",
+        help="Choose whether output follows seed distribution closely or is intentionally skewed/noisy.",
+    )
+    skew_strength = 0.35
+    if profile_mode == "Skewed (stress-test)":
+        skew_strength = float(
+            p_mode2.slider(
+                "Skew intensity",
+                min_value=0.10,
+                max_value=1.00,
+                value=0.35,
+                step=0.05,
+                key="syn_skew_strength",
+            )
+        )
 
     if model_choice in ("CTGAN (GAN)", "TVAE") and not SDV_AVAILABLE:
         st.warning("SDV package not available. Install `sdv` in requirements or use fallback models.")
@@ -1688,11 +1802,21 @@ def render_synthetic_generator_tab() -> None:
                 elif model_choice == "TVAE":
                     synthetic_df = generate_sdv_synthetic(private_df, target_rows, "TVAE")
                 elif model_choice == "Azure LLM (AI Foundry)":
-                    synthetic_df = generate_with_azure_llm(private_df, target_rows)
+                    synthetic_df = generate_with_azure_llm(
+                        private_df,
+                        target_rows,
+                        custom_instruction=user_instruction,
+                    )
                 else:
                     synthetic_df = generate_bootstrap_synthetic(private_df, target_rows)
+                if profile_mode == "Normalized (seed-aligned)":
+                    synthetic_df = align_synthetic_to_seed_distribution(private_df, synthetic_df)
+                else:
+                    synthetic_df = add_skew_for_stress_testing(synthetic_df, skew_strength)
             st.session_state.synthetic_df = synthetic_df
             st.success(f"Synthetic dataset generated: {len(synthetic_df):,} rows")
+            if user_instruction.strip():
+                st.caption("Custom instruction captured for generation context.")
             st.toast("Synthetic generation complete.")
         except Exception as exc:
             st.error(f"Generation failed: {exc}")
