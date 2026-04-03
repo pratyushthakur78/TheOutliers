@@ -1747,7 +1747,7 @@ def render_synthetic_generator_tab() -> None:
             "CTGAN (GAN)",
             "TVAE",
             "Diffusion-style bootstrap",
-            "Azure LLM (AI Foundry)",
+            "AI Astra",
         ],
         key="syn_model_choice",
     )
@@ -1761,32 +1761,35 @@ def render_synthetic_generator_tab() -> None:
             key="syn_target_rows",
         )
     )
-    user_instruction = st.text_area(
-        "Custom generation instruction (optional)",
-        value="",
-        height=90,
-        key="syn_user_instruction",
-        help="Add business-specific rules, edge cases, or extra fields to guide generation.",
-    )
-    p_mode1, p_mode2 = st.columns(2)
-    profile_mode = p_mode1.selectbox(
-        "Distribution profile",
-        ["Normalized (seed-aligned)", "Skewed (stress-test)"],
-        key="syn_distribution_profile",
-        help="Choose whether output follows seed distribution closely or is intentionally skewed/noisy.",
-    )
+    user_instruction = ""
+    profile_mode = "Normalized (seed-aligned)"
     skew_strength = 0.35
-    if profile_mode == "Skewed (stress-test)":
-        skew_strength = float(
-            p_mode2.slider(
-                "Skew intensity",
-                min_value=0.10,
-                max_value=1.00,
-                value=0.35,
-                step=0.05,
-                key="syn_skew_strength",
-            )
+    if model_choice == "AI Astra":
+        user_instruction = st.text_area(
+            "Custom generation instruction (optional)",
+            value="",
+            height=90,
+            key="syn_user_instruction",
+            help="Add business-specific rules, edge cases, or extra fields to guide generation.",
         )
+        p_mode1, p_mode2 = st.columns(2)
+        profile_mode = p_mode1.selectbox(
+            "Distribution profile",
+            ["Normalized (seed-aligned)", "Skewed (stress-test)"],
+            key="syn_distribution_profile",
+            help="Choose whether output follows seed distribution closely or is intentionally skewed/noisy.",
+        )
+        if profile_mode == "Skewed (stress-test)":
+            skew_strength = float(
+                p_mode2.slider(
+                    "Skew intensity",
+                    min_value=0.10,
+                    max_value=1.00,
+                    value=0.35,
+                    step=0.05,
+                    key="syn_skew_strength",
+                )
+            )
 
     if model_choice in ("CTGAN (GAN)", "TVAE") and not SDV_AVAILABLE:
         st.warning("SDV package not available. Install `sdv` in requirements or use fallback models.")
@@ -1801,7 +1804,7 @@ def render_synthetic_generator_tab() -> None:
                     synthetic_df = generate_sdv_synthetic(private_df, target_rows, "CTGAN")
                 elif model_choice == "TVAE":
                     synthetic_df = generate_sdv_synthetic(private_df, target_rows, "TVAE")
-                elif model_choice == "Azure LLM (AI Foundry)":
+                elif model_choice == "AI Astra":
                     synthetic_df = generate_with_azure_llm(
                         private_df,
                         target_rows,
