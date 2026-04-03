@@ -175,6 +175,9 @@ def inject_theme() -> None:
     font-weight: 700;
     color: #1f2937;
   }}
+  [data-testid="stSidebar"] .stButton {{
+    margin-top: 0.42rem;
+  }}
   .sidebar-reg-item {{
     position: relative;
     overflow: hidden;
