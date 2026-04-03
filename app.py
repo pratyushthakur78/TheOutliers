@@ -419,7 +419,11 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
     """
     endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
     api_key = os.getenv("AZURE_OPENAI_API_KEY", "") or os.getenv("AZURE_API_KEY", "")
-    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
+    deployment = (
+        os.getenv("AZURE_OPENAI_DEPLOYMENT", "").strip()
+        or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "").strip()
+        or os.getenv("MODEL_DEPLOYMENT_NAME", "").strip()
+    )
     api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
     agent_id = os.getenv("AZURE_EXISTING_AGENT_ID", "").strip()
     if not endpoint or not api_key:
@@ -509,26 +513,30 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
 
         base_input = {"input": [{"role": "user", "content": prompt}]}
         # Azure surfaces may expect either top-level `agent_reference` or SDK-style `extra_body`.
-        candidate_bodies = [
-            {
-                **base_input,
+        body_top_level = {
+            **base_input,
+            "agent_reference": {
+                "name": agent_name,
+                "version": agent_version,
+                "type": "agent_reference",
+            },
+        }
+        body_extra = {
+            **base_input,
+            "extra_body": {
                 "agent_reference": {
                     "name": agent_name,
                     "version": agent_version,
                     "type": "agent_reference",
-                },
+                }
             },
-            {
-                **base_input,
-                "extra_body": {
-                    "agent_reference": {
-                        "name": agent_name,
-                        "version": agent_version,
-                        "type": "agent_reference",
-                    }
-                },
-            },
-        ]
+        }
+        # Some Foundry setups also require a model/deployment in agent calls.
+        if deployment:
+            body_top_level["model"] = deployment
+            body_extra["model"] = deployment
+
+        candidate_bodies = [body_top_level, body_extra]
 
         payload = None
         last_error: Exception | None = None
@@ -551,7 +559,8 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
                     llm_df = pd.concat([llm_df, extra], ignore_index=True)
                 return llm_df.head(target_rows)
             raise RuntimeError(
-                "Agent Reference call failed. Set AZURE_OPENAI_DEPLOYMENT to enable automatic fallback. "
+                "Agent Reference call failed. Set AZURE_OPENAI_DEPLOYMENT (or AZURE_OPENAI_DEPLOYMENT_NAME) "
+                "to enable automatic fallback. "
                 f"Endpoint: '{responses_url}'. Last error: {last_error}"
             )
 
