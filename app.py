@@ -136,17 +136,18 @@ def inject_theme() -> None:
     box-shadow: 0 4px 12px rgba(17, 24, 39, 0.04);
   }}
   .sidebar-card-title {{
-    font-size: 0.72rem;
+    font-size: 0.84rem;
     font-weight: 700;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #b45309;
-    margin-bottom: 0.35rem;
+    color: #9a3412;
+    margin-bottom: 0.42rem;
   }}
   .sidebar-helper {{
-    color: #6b7280;
-    font-size: 0.76rem;
-    margin-top: 0.3rem;
+    color: #4b5563;
+    font-size: 0.83rem;
+    font-weight: 500;
+    margin-top: 0.38rem;
   }}
   [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {{
     border: 1.2px dashed #f1c27d !important;
@@ -158,14 +159,31 @@ def inject_theme() -> None:
     background: #fff4e5 !important;
   }}
   .sidebar-reg-item {{
-    border: 1px solid #f1eadf;
-    background: #fffdfa;
-    border-radius: 8px;
-    padding: 0.32rem 0.45rem;
-    margin-bottom: 0.3rem;
-    color: #374151;
-    font-size: 0.76rem;
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgba(245, 166, 35, 0.35);
+    background: linear-gradient(145deg, rgba(255,255,255,0.95) 0%, rgba(255,243,223,0.92) 56%, rgba(255,236,206,0.96) 100%);
+    border-radius: 10px;
+    padding: 0.45rem 0.52rem;
+    margin-bottom: 0.36rem;
+    color: #1f2937;
+    font-size: 0.82rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
     word-break: break-word;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.75), 0 8px 18px rgba(245, 158, 11, 0.12);
+  }}
+  .sidebar-reg-item::before {{
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -125%;
+    width: 52%;
+    height: 100%;
+    transform: skewX(-18deg);
+    background: linear-gradient(90deg, rgba(255,255,255,0.0), rgba(255,255,255,0.52), rgba(255,255,255,0.0));
+    animation: registryShine 4.4s ease-in-out infinite;
+    pointer-events: none;
   }}
   .sidebar-empty {{
     border: 1px dashed #edd7b8;
@@ -227,16 +245,16 @@ def inject_theme() -> None:
   }}
   .columns-chip-grid {{
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.22rem;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.24rem;
   }}
   .column-chip {{
     border: 1px solid #f1dfc9;
     background: rgba(255, 255, 255, 0.84);
     border-radius: 7px;
-    padding: 0.2rem 0.42rem;
+    padding: 0.24rem 0.45rem;
     color: #374151;
-    font-size: 0.74rem;
+    font-size: 0.76rem;
     font-weight: 600;
     white-space: nowrap;
     overflow: hidden;
@@ -261,6 +279,12 @@ def inject_theme() -> None:
     0% {{ left: -120%; opacity: 0; }}
     14% {{ opacity: 1; }}
     52% {{ left: 145%; opacity: 0.95; }}
+    100% {{ left: 145%; opacity: 0; }}
+  }}
+  @keyframes registryShine {{
+    0% {{ left: -125%; opacity: 0; }}
+    12% {{ opacity: 1; }}
+    48% {{ left: 145%; opacity: 0.9; }}
     100% {{ left: 145%; opacity: 0; }}
   }}
   .block-card {{
@@ -1101,7 +1125,7 @@ def render_sidebar() -> None:
                         unsafe_allow_html=True,
                     )
                 else:
-                    dynamic_height = max(92, min(150, 86 + (len(column_names) // 2) * 14))
+                    dynamic_height = max(96, min(172, 88 + len(column_names) * 9))
                     chips_html = "".join(
                         f'<div class="column-chip">{html.escape(col_name)}</div>'
                         for col_name in column_names
