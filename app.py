@@ -482,12 +482,41 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
                 raw = str(e)
             raise RuntimeError(f"Azure API HTTP {e.code}: {raw}") from e
 
-    def _chat_completion_content() -> str:
+    def _deployment_generation_content() -> str:
         if not deployment:
             raise RuntimeError(
                 "Agent call failed and no AZURE_OPENAI_DEPLOYMENT fallback is set."
             )
-        body = {
+        # Try Responses API first (many latest models only support this),
+        # then fallback to chat completions for older deployments.
+        responses_url = f"{endpoint_v1}/responses"
+        responses_body = {
+            "model": deployment,
+            "input": [
+                {"role": "system", "content": "You are a synthetic data generator. Output strict JSON array only."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.4,
+        }
+        try:
+            payload = _post_json(responses_url, responses_body)
+            content = payload.get("output_text", "")
+            if not content:
+                output = payload.get("output", [])
+                if output and isinstance(output, list):
+                    parts = []
+                    for item in output:
+                        for c in item.get("content", []) if isinstance(item, dict) else []:
+                            t = c.get("text")
+                            if t:
+                                parts.append(t)
+                    content = "\n".join(parts).strip()
+            if content:
+                return content
+        except Exception:
+            pass
+
+        chat_body = {
             "messages": [
                 {"role": "system", "content": "You are a synthetic data generator. Output strict JSON array only."},
                 {"role": "user", "content": prompt},
@@ -495,11 +524,11 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
             "temperature": 0.4,
             "max_tokens": 3000,
         }
-        url = (
+        chat_url = (
             f"{endpoint_base}/openai/deployments/{deployment}/chat/completions"
             f"?api-version={api_version}"
         )
-        payload = _post_json(url, body)
+        payload = _post_json(chat_url, chat_body)
         return payload["choices"][0]["message"]["content"]
 
     # Route A: Agent Reference (Azure AI Foundry Agent) via Responses API
@@ -550,7 +579,7 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
         if payload is None:
             # Fallback to deployment mode if configured
             if deployment:
-                content = _chat_completion_content()
+                content = _deployment_generation_content()
                 content = _extract_json_content(content)
                 records = json.loads(content)
                 llm_df = pd.DataFrame(records)
@@ -584,7 +613,7 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
             raise RuntimeError(
                 "Set AZURE_EXISTING_AGENT_ID (agent mode) or AZURE_OPENAI_DEPLOYMENT (fallback mode)."
             )
-        content = _chat_completion_content()
+        content = _deployment_generation_content()
 
     content = _extract_json_content(content)
     records = json.loads(content)
