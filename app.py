@@ -109,7 +109,7 @@ def inject_theme() -> None:
     border: 1px solid #f1d4ad;
     border-radius: 12px;
     padding: 0.85rem 0.8rem 0.7rem 0.8rem;
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.92rem;
     box-shadow: 0 6px 18px rgba(179, 118, 42, 0.08);
   }}
   .sidebar-kicker {{
@@ -135,8 +135,8 @@ def inject_theme() -> None:
     background: #ffffff;
     border: 1px solid #efdfc8;
     border-radius: 12px;
-    padding: 0.65rem 0.65rem 0.45rem 0.65rem;
-    margin-bottom: 0.65rem;
+    padding: 0.72rem 0.68rem 0.56rem 0.68rem;
+    margin-bottom: 0.82rem;
     box-shadow: 0 4px 12px rgba(17, 24, 39, 0.04);
   }}
   .sidebar-card-title {{
@@ -145,7 +145,7 @@ def inject_theme() -> None:
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: #9a3412;
-    margin-bottom: 0.42rem;
+    margin-bottom: 0.5rem;
   }}
   .sidebar-helper {{
     color: #4b5563;
