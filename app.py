@@ -417,10 +417,11 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
       AZURE_OPENAI_API_VERSION (optional; default 2024-02-15-preview)
     """
     endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
-    api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
+    api_key = os.getenv("AZURE_OPENAI_API_KEY", "") or os.getenv("AZURE_API_KEY", "")
     deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
     api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
-    if not endpoint or not api_key or not deployment:
+    agent_id = os.getenv("AZURE_EXISTING_AGENT_ID", "").strip()
+    if not endpoint or not api_key:
         raise RuntimeError("Azure LLM credentials missing in environment variables.")
 
     # Keep token-safe batch size and scale by bootstrap for very large targets.
@@ -434,28 +435,93 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
         f"Schema: {schema}. "
         f"Example rows: {sample_rows}."
     )
-    body = {
-        "messages": [
-            {"role": "system", "content": "You are a synthetic data generator. Output strict JSON array only."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.4,
-        "max_tokens": 3000,
-    }
-    url = (
-        f"{endpoint}/openai/deployments/{deployment}/chat/completions"
-        f"?api-version={api_version}"
-    )
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json", "api-key": api_key},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=90) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    content = payload["choices"][0]["message"]["content"]
-    content = content.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    def _extract_json_content(text: str) -> str:
+        cleaned = text.strip()
+        cleaned = cleaned.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        # If model returns wrapper text, try to isolate JSON array
+        if "[" in cleaned and "]" in cleaned:
+            start = cleaned.find("[")
+            end = cleaned.rfind("]")
+            if start != -1 and end != -1 and end > start:
+                return cleaned[start : end + 1]
+        return cleaned
+
+    # Route A: Agent Reference (Azure AI Foundry Agent) via Responses API
+    if agent_id:
+        if ":" in agent_id:
+            agent_name, agent_version = agent_id.split(":", 1)
+        else:
+            agent_name, agent_version = agent_id, "1"
+
+        if endpoint.endswith("/openai/v1"):
+            responses_url = f"{endpoint}/responses"
+        elif "/openai/v1/" in endpoint or endpoint.endswith("/openai/v1/"):
+            responses_url = f"{endpoint.rstrip('/')}/responses"
+        else:
+            responses_url = f"{endpoint}/openai/v1/responses"
+
+        body = {
+            "input": [{"role": "user", "content": prompt}],
+            "extra_body": {
+                "agent_reference": {
+                    "name": agent_name,
+                    "version": agent_version,
+                    "type": "agent_reference",
+                }
+            },
+        }
+        req = urllib.request.Request(
+            responses_url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", "api-key": api_key},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+
+        content = payload.get("output_text", "")
+        if not content:
+            # Fallback parse for possible structured output formats
+            output = payload.get("output", [])
+            if output and isinstance(output, list):
+                parts = []
+                for item in output:
+                    for c in item.get("content", []) if isinstance(item, dict) else []:
+                        t = c.get("text")
+                        if t:
+                            parts.append(t)
+                content = "\n".join(parts).strip()
+        if not content:
+            raise RuntimeError("Agent response did not include output_text.")
+    else:
+        # Route B: Azure OpenAI deployment chat completion
+        if not deployment:
+            raise RuntimeError(
+                "Set AZURE_EXISTING_AGENT_ID for Agent mode, or AZURE_OPENAI_DEPLOYMENT for deployment mode."
+            )
+        body = {
+            "messages": [
+                {"role": "system", "content": "You are a synthetic data generator. Output strict JSON array only."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.4,
+            "max_tokens": 3000,
+        }
+        url = (
+            f"{endpoint}/openai/deployments/{deployment}/chat/completions"
+            f"?api-version={api_version}"
+        )
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", "api-key": api_key},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        content = payload["choices"][0]["message"]["content"]
+
+    content = _extract_json_content(content)
     records = json.loads(content)
     llm_df = pd.DataFrame(records)
     # Expand to requested size with bootstrap if needed
