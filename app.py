@@ -19,7 +19,13 @@ import streamlit as st
 # ---------------------------------------------------------------------------
 # Paths / branding
 # ---------------------------------------------------------------------------
-HACKATHON_DIR = r"D:\OneDrive - Biz2X Platform Pvt Ltd\Documents\Hackathon"
+if os.name == "nt":
+    DEFAULT_HACKATHON_DIR = r"D:\OneDrive - Biz2X Platform Pvt Ltd\Documents\Hackathon"
+else:
+    # Azure App Service (Linux) writable app directory
+    DEFAULT_HACKATHON_DIR = "/home/site/wwwroot"
+
+HACKATHON_DIR = os.getenv("HACKATHON_DIR", DEFAULT_HACKATHON_DIR)
 NOTEBOOK_OUTPUT_PATH = os.path.join(HACKATHON_DIR, "data_analysis.ipynb")
 
 BRAND_NAME = "The Outliers"
@@ -530,6 +536,7 @@ def render_analytics_tab() -> None:
             max_value=max(1, len(joined_df)),
             value=min(500, len(joined_df)),
             step=1,
+            key="ana_rows_for_analysis",
             help="Controls sample size used in charts.",
         )
     )
@@ -541,76 +548,168 @@ def render_analytics_tab() -> None:
     k3.metric("Null Cells", f"{int(joined_df.isna().sum().sum()):,}")
     k4.metric("Duplicates", f"{int(joined_df.duplicated().sum()):,}")
 
-    all_cols = list(plot_df.columns)
-    numeric_cols = [c for c in all_cols if pd.api.types.is_numeric_dtype(plot_df[c])]
-
-    chart_type = st.selectbox(
-        "Chart Type",
-        ["Bar", "Line", "Scatter", "Histogram", "Box", "Pie", "Heatmap"],
+    dtypes_df = pd.DataFrame(
+        {
+            "column": joined_df.columns,
+            "dtype": [str(t) for t in joined_df.dtypes],
+            "total_records": [len(joined_df)] * len(joined_df.columns),
+            "null_count": joined_df.isna().sum().values,
+            "non_null_count": joined_df.notna().sum().values,
+        }
     )
-
-    fig: go.Figure | None = None
-
-    if chart_type == "Heatmap":
-        if len(numeric_cols) < 2:
-            st.warning("Heatmap requires at least 2 numeric columns.")
-        else:
-            corr = plot_df[numeric_cols].corr(numeric_only=True)
-            fig = px.imshow(
-                corr,
-                text_auto=".2f",
-                aspect="auto",
-                color_continuous_scale="Oranges",
-                title="Correlation Heatmap",
-            )
+    if len(joined_df) > 0:
+        dtypes_df["fill_rate_%"] = (
+            (dtypes_df["non_null_count"] / dtypes_df["total_records"]) * 100
+        ).round(2)
+        dtypes_df["missing_rate_%"] = (
+            (dtypes_df["null_count"] / dtypes_df["total_records"]) * 100
+        ).round(2)
     else:
-        x_col = st.selectbox("X Axis", all_cols, key="x_col")
-        y_col = st.selectbox("Y Axis", [""] + all_cols, key="y_col")
-        color_col = st.selectbox("Legend / Color", [""] + all_cols, key="color_col")
+        dtypes_df["fill_rate_%"] = 0.0
+        dtypes_df["missing_rate_%"] = 0.0
 
-        y_val = y_col or None
-        color_val = color_col or None
+    left_col, right_col = st.columns(2)
+    chart_key_base = "analytics_joined"
 
-        if chart_type == "Bar":
-            if not y_val:
-                st.warning("Select Y Axis for Bar chart.")
-            else:
-                fig = px.bar(plot_df, x=x_col, y=y_val, color=color_val)
-        elif chart_type == "Line":
-            if not y_val:
-                st.warning("Select Y Axis for Line chart.")
-            else:
-                fig = px.line(plot_df, x=x_col, y=y_val, color=color_val, markers=True)
-        elif chart_type == "Scatter":
-            if not y_val:
-                st.warning("Select Y Axis for Scatter chart.")
-            else:
-                fig = px.scatter(plot_df, x=x_col, y=y_val, color=color_val)
-        elif chart_type == "Histogram":
-            fig = px.histogram(plot_df, x=x_col, color=color_val)
-        elif chart_type == "Box":
-            if not y_val:
-                st.warning("Select Y Axis for Box chart.")
-            else:
-                fig = px.box(plot_df, x=x_col, y=y_val, color=color_val)
-        elif chart_type == "Pie":
-            if not y_val:
-                vc = plot_df[x_col].astype(str).value_counts().head(30)
-                fig = px.pie(values=vc.values, names=vc.index)
-            else:
-                fig = px.pie(plot_df, names=x_col, values=y_val, color=color_val)
+    with left_col:
+        st.markdown('<div class="minor-title">Schema & Null Summary</div>', unsafe_allow_html=True)
+        st.dataframe(dtypes_df, use_container_width=True, height=480)
 
-    if fig is not None:
-        fig.update_layout(
-            paper_bgcolor="#ffffff",
-            plot_bgcolor="#ffffff",
-            font=dict(family="Inter", color="#1f2937"),
-            margin=dict(t=50, l=30, r=20, b=30),
+    with right_col:
+        st.markdown('<div class="minor-title">Quick Graph Builder</div>', unsafe_allow_html=True)
+
+        all_cols = list(plot_df.columns)
+        numeric_cols = [c for c in all_cols if pd.api.types.is_numeric_dtype(plot_df[c])]
+        graph_options = ["Bar", "Line", "Scatter", "Histogram", "Box", "Pie", "Bar Count", "Heatmap"]
+
+        graph_type = st.selectbox(
+            "Graph",
+            graph_options,
+            key=f"ana_graph_{chart_key_base}",
         )
-        st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown('<div class="minor-title">Joined Data Table</div>', unsafe_allow_html=True)
-    st.dataframe(plot_df, use_container_width=True, height=280)
+        x_axis = st.selectbox(
+            "X Axis",
+            all_cols,
+            key=f"ana_x_{chart_key_base}",
+        )
+        y_axis = st.selectbox(
+            "Y Axis",
+            ["(auto/count)"] + numeric_cols,
+            key=f"ana_y_{chart_key_base}",
+        )
+        y_col = None if y_axis == "(auto/count)" else y_axis
+
+        fig: go.Figure | None = None
+        if plot_df.empty:
+            st.info("Joined data is empty.")
+        else:
+            if graph_type == "Heatmap":
+                if len(numeric_cols) < 2:
+                    st.info("Heatmap requires at least 2 numeric columns.")
+                else:
+                    corr = plot_df[numeric_cols].corr(numeric_only=True)
+                    fig = px.imshow(
+                        corr,
+                        text_auto=".2f",
+                        aspect="auto",
+                        color_continuous_scale="Oranges",
+                        title="Correlation Heatmap",
+                    )
+            elif graph_type == "Bar":
+                if y_col:
+                    fig = px.bar(plot_df, x=x_axis, y=y_col, color_discrete_sequence=[ACCENT])
+                else:
+                    vc = plot_df[x_axis].astype(str).value_counts().head(25)
+                    fig = px.bar(
+                        x=vc.index,
+                        y=vc.values,
+                        labels={"x": x_axis, "y": "count"},
+                        color=vc.values,
+                        color_continuous_scale="Oranges",
+                    )
+            elif graph_type == "Line":
+                if y_col:
+                    fig = px.line(plot_df, x=x_axis, y=y_col, markers=True)
+                else:
+                    st.info("Select a numeric Y Axis for Line chart.")
+            elif graph_type == "Scatter":
+                if y_col:
+                    fig = px.scatter(plot_df, x=x_axis, y=y_col)
+                else:
+                    st.info("Select a numeric Y Axis for Scatter chart.")
+            elif graph_type == "Histogram":
+                fig = px.histogram(plot_df, x=x_axis, color_discrete_sequence=[ACCENT])
+            elif graph_type == "Box":
+                target = y_col or x_axis
+                if target in numeric_cols:
+                    fig = px.box(plot_df, y=target, color_discrete_sequence=[ACCENT])
+                else:
+                    st.info("Box chart requires a numeric axis.")
+            elif graph_type == "Bar Count":
+                vc = plot_df[x_axis].astype(str).value_counts().head(25)
+                fig = px.bar(
+                    x=vc.index,
+                    y=vc.values,
+                    labels={"x": x_axis, "y": "count"},
+                    color=vc.values,
+                    color_continuous_scale="Oranges",
+                )
+            elif graph_type == "Pie":
+                if y_col:
+                    fig = px.pie(plot_df, names=x_axis, values=y_col, color_discrete_sequence=px.colors.sequential.Oranges)
+                else:
+                    vc = plot_df[x_axis].astype(str).value_counts().head(20)
+                    fig = px.pie(values=vc.values, names=vc.index, color_discrete_sequence=px.colors.sequential.Oranges)
+
+            if fig is not None:
+                fig.update_layout(
+                    paper_bgcolor="rgba(255,255,255,0)",
+                    plot_bgcolor="rgba(255,255,255,0.75)",
+                    font=dict(family="Inter", color="#1f2937"),
+                    margin=dict(t=30, l=20, r=20, b=20),
+                    height=320,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown('<div class="block-card">', unsafe_allow_html=True)
+    st.markdown('<div class="minor-title">Raw Data Sample</div>', unsafe_allow_html=True)
+    rows_to_show = int(
+        st.number_input(
+            "Rows to display",
+            min_value=1,
+            max_value=max(1, len(joined_df)),
+            value=min(25, len(joined_df)),
+            step=1,
+            key="ana_raw_rows",
+            help="Type the exact number of rows to print.",
+        )
+    )
+    st.dataframe(joined_df.head(rows_to_show), use_container_width=True, height=220)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="block-card">', unsafe_allow_html=True)
+    st.markdown('<div class="minor-title">Column Statistics</div>', unsafe_allow_html=True)
+    stats_df = build_column_statistics(joined_df)
+    numeric_stats_cols = [
+        "mean",
+        "min",
+        "max",
+        "5%",
+        "10%",
+        "20%",
+        "30%",
+        "50%",
+        "70%",
+        "80%",
+        "90%",
+        "95%",
+    ]
+    for c in numeric_stats_cols:
+        if c in stats_df.columns:
+            stats_df[c] = pd.to_numeric(stats_df[c], errors="coerce").round(4)
+    st.dataframe(stats_df, use_container_width=True, height=320)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
