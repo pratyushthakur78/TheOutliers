@@ -9,6 +9,8 @@ import json
 import os
 import re
 import html
+import pickle
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -39,6 +41,8 @@ else:
 
 HACKATHON_DIR = os.getenv("HACKATHON_DIR", DEFAULT_HACKATHON_DIR)
 NOTEBOOK_OUTPUT_PATH = os.path.join(HACKATHON_DIR, "data_analysis.ipynb")
+SESSION_SNAPSHOT_PATH = os.path.join(HACKATHON_DIR, ".streamlit_session_snapshot.pkl")
+SESSION_SNAPSHOT_TTL_SECONDS = 300
 
 BRAND_NAME = "The Outliers"
 ACCENT = "#FFB347"
@@ -1144,6 +1148,11 @@ def generate_tabular_from_prompt(user_prompt: str, target_rows: int) -> pd.DataF
 # Session state
 # ---------------------------------------------------------------------------
 def init_state() -> None:
+    if "_snapshot_restore_attempted" not in st.session_state:
+        restored = restore_session_snapshot(SESSION_SNAPSHOT_TTL_SECONDS)
+        st.session_state["_snapshot_restore_attempted"] = True
+        st.session_state["_snapshot_restored"] = restored
+
     if "data_registry" not in st.session_state:
         st.session_state.data_registry: dict[str, pd.DataFrame] = {}
     if "file_signatures" not in st.session_state:
@@ -1156,6 +1165,51 @@ def init_state() -> None:
         st.session_state.synthetic_df: pd.DataFrame | None = None
     if "bot_generated_df" not in st.session_state:
         st.session_state.bot_generated_df: pd.DataFrame | None = None
+
+
+def restore_session_snapshot(max_age_seconds: int) -> bool:
+    """Restore key app state if a recent snapshot is available."""
+    if not os.path.exists(SESSION_SNAPSHOT_PATH):
+        return False
+    try:
+        with io.open(SESSION_SNAPSHOT_PATH, "rb") as f:
+            payload = pickle.load(f)
+        saved_at = float(payload.get("saved_at", 0.0))
+        if (time.time() - saved_at) > max_age_seconds:
+            return False
+        state = payload.get("state", {})
+        if not isinstance(state, dict):
+            return False
+        for key, value in state.items():
+            st.session_state[key] = value
+        return True
+    except Exception:
+        return False
+
+
+def save_session_snapshot() -> None:
+    """Persist key app state so brief idle reconnects can recover context."""
+    keys_to_save = [
+        "data_registry",
+        "file_signatures",
+        "joined_df",
+        "join_summary",
+        "synthetic_df",
+        "bot_generated_df",
+    ]
+    state = {k: st.session_state.get(k) for k in keys_to_save if k in st.session_state}
+    payload = {"saved_at": time.time(), "state": state}
+    try:
+        parent = os.path.dirname(SESSION_SNAPSHOT_PATH)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp_path = f"{SESSION_SNAPSHOT_PATH}.tmp"
+        with io.open(tmp_path, "wb") as f:
+            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_path, SESSION_SNAPSHOT_PATH)
+    except Exception:
+        # Snapshot is best-effort and should never block app usage.
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -2051,6 +2105,9 @@ def main() -> None:
     )
     inject_theme()
     init_state()
+    if st.session_state.get("_snapshot_restored"):
+        st.caption("Session recovered after idle (within last 5 minutes).")
+        st.session_state["_snapshot_restored"] = False
     render_sidebar()
 
     ok_nb, nb_msg = save_notebook_to_path(NOTEBOOK_OUTPUT_PATH)
@@ -2088,6 +2145,8 @@ def main() -> None:
 
     with tab_bot:
         render_data_bot_tab()
+
+    save_session_snapshot()
 
 
 if __name__ == "__main__":
