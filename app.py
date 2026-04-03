@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 from typing import Any
 
@@ -446,6 +447,24 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
                 return cleaned[start : end + 1]
         return cleaned
 
+    def _post_json(url: str, body: dict[str, Any]) -> dict[str, Any]:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", "api-key": api_key},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raw = ""
+            try:
+                raw = e.read().decode("utf-8")
+            except Exception:
+                raw = str(e)
+            raise RuntimeError(f"Azure API HTTP {e.code}: {raw}") from e
+
     # Route A: Agent Reference (Azure AI Foundry Agent) via Responses API
     if agent_id:
         if ":" in agent_id:
@@ -460,24 +479,42 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
         else:
             responses_url = f"{endpoint}/openai/v1/responses"
 
-        body = {
-            "input": [{"role": "user", "content": prompt}],
-            "extra_body": {
+        base_input = {"input": [{"role": "user", "content": prompt}]}
+        # Azure surfaces may expect either top-level `agent_reference` or SDK-style `extra_body`.
+        candidate_bodies = [
+            {
+                **base_input,
                 "agent_reference": {
                     "name": agent_name,
                     "version": agent_version,
                     "type": "agent_reference",
-                }
+                },
             },
-        }
-        req = urllib.request.Request(
-            responses_url,
-            data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json", "api-key": api_key},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+            {
+                **base_input,
+                "extra_body": {
+                    "agent_reference": {
+                        "name": agent_name,
+                        "version": agent_version,
+                        "type": "agent_reference",
+                    }
+                },
+            },
+        ]
+
+        payload = None
+        last_error: Exception | None = None
+        for body in candidate_bodies:
+            try:
+                payload = _post_json(responses_url, body)
+                break
+            except Exception as e:
+                last_error = e
+                continue
+        if payload is None:
+            raise RuntimeError(
+                f"Agent Reference call failed for endpoint '{responses_url}'. Last error: {last_error}"
+            )
 
         content = payload.get("output_text", "")
         if not content:
@@ -511,14 +548,7 @@ def generate_with_azure_llm(seed_df: pd.DataFrame, target_rows: int) -> pd.DataF
             f"{endpoint}/openai/deployments/{deployment}/chat/completions"
             f"?api-version={api_version}"
         )
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json", "api-key": api_key},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+        payload = _post_json(url, body)
         content = payload["choices"][0]["message"]["content"]
 
     content = _extract_json_content(content)
