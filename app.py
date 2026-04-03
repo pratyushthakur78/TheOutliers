@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import html
 import urllib.error
 import urllib.request
 from typing import Any
@@ -173,6 +174,94 @@ def inject_theme() -> None:
     border-radius: 8px;
     padding: 0.45rem 0.55rem;
     font-size: 0.76rem;
+  }}
+  .columns-liquid-box {{
+    position: relative;
+    max-height: 150px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    border-radius: 12px;
+    border: 1px solid rgba(245, 166, 35, 0.42);
+    background:
+      linear-gradient(155deg, rgba(255,255,255,0.94) 0%, rgba(255,246,229,0.92) 52%, rgba(255,235,200,0.95) 100%);
+    padding: 0.4rem 0.42rem 0.28rem 0.42rem;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.76),
+      inset 0 -1px 0 rgba(255,255,255,0.46),
+      0 10px 22px rgba(245, 158, 11, 0.16);
+    backdrop-filter: blur(2px);
+  }}
+  .columns-liquid-head {{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.45rem;
+    margin-bottom: 0.3rem;
+    padding: 0 0.08rem;
+    color: #7c4a11;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }}
+  .columns-liquid-count {{
+    border: 1px solid rgba(214, 134, 18, 0.38);
+    border-radius: 999px;
+    padding: 0.05rem 0.42rem;
+    background: rgba(255, 255, 255, 0.74);
+    color: #9a3412;
+    font-size: 0.65rem;
+    font-weight: 700;
+  }}
+  .columns-liquid-box::before {{
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -120%;
+    width: 60%;
+    height: 100%;
+    transform: skewX(-16deg);
+    background: linear-gradient(90deg, rgba(255,255,255,0.0), rgba(255,255,255,0.45), rgba(255,255,255,0.0));
+    animation: liquidShine 3.8s ease-in-out infinite;
+    pointer-events: none;
+  }}
+  .columns-chip-grid {{
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.22rem;
+  }}
+  .column-chip {{
+    border: 1px solid #f1dfc9;
+    background: rgba(255, 255, 255, 0.84);
+    border-radius: 7px;
+    padding: 0.2rem 0.42rem;
+    color: #374151;
+    font-size: 0.74rem;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }}
+  .columns-liquid-box::-webkit-scrollbar {{
+    width: 8px;
+  }}
+  .columns-liquid-box::-webkit-scrollbar-track {{
+    background: rgba(255, 255, 255, 0.4);
+    border-radius: 999px;
+  }}
+  .columns-liquid-box::-webkit-scrollbar-thumb {{
+    background: linear-gradient(180deg, rgba(245, 158, 11, 0.66), rgba(217, 119, 6, 0.72));
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.7);
+  }}
+  .columns-liquid-box::-webkit-scrollbar-thumb:hover {{
+    background: linear-gradient(180deg, rgba(234, 135, 8, 0.76), rgba(194, 92, 0, 0.84));
+  }}
+  @keyframes liquidShine {{
+    0% {{ left: -120%; opacity: 0; }}
+    14% {{ opacity: 1; }}
+    52% {{ left: 145%; opacity: 0.95; }}
+    100% {{ left: 145%; opacity: 0; }}
   }}
   .block-card {{
     background: #ffffff;
@@ -999,11 +1088,33 @@ def render_sidebar() -> None:
             unsafe_allow_html=True,
         )
     else:
-        for table_name in st.session_state.data_registry.keys():
+        for table_name, table_df in st.session_state.data_registry.items():
             st.sidebar.markdown(
                 f'<div class="sidebar-reg-item">{table_name}</div>',
                 unsafe_allow_html=True,
             )
+            with st.sidebar.expander("Columns", expanded=False):
+                column_names = [str(c) for c in table_df.columns]
+                if not column_names:
+                    st.markdown(
+                        '<div class="sidebar-empty">No columns found in this file.</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    dynamic_height = max(92, min(150, 86 + (len(column_names) // 2) * 14))
+                    chips_html = "".join(
+                        f'<div class="column-chip">{html.escape(col_name)}</div>'
+                        for col_name in column_names
+                    )
+                    st.markdown(
+                        (
+                            f'<div class="columns-liquid-box" style="max-height:{dynamic_height}px;">'
+                            f'<div class="columns-liquid-head"><span>Columns</span><span class="columns-liquid-count">{len(column_names)}</span></div>'
+                            f'<div class="columns-chip-grid">{chips_html}</div>'
+                            "</div>"
+                        ),
+                        unsafe_allow_html=True,
+                    )
 
     if st.sidebar.button("Clear Registry", use_container_width=True):
         st.session_state.data_registry = {}
