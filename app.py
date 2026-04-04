@@ -3288,17 +3288,27 @@ def render_model_validation_sandbox_tab() -> None:
                 "Install it with: pip install scikit-learn"
             )
             return
+
+        def _safe_stratify_target(y_series: pd.Series, is_regression_problem: bool) -> pd.Series | None:
+            """Use stratify only when every class has at least two rows."""
+            if is_regression_problem:
+                return None
+            counts = y_series.astype(str).value_counts(dropna=False)
+            if counts.empty or int(counts.min()) < 2:
+                return None
+            return y_series
+
         X = real_df[feature_cols].copy()
         y = real_df[target]
         m = y.notna()
         X, y = X.loc[m], y.loc[m]
-        strat = problem != "regression" and y.nunique() > 1
+        strat = _safe_stratify_target(y, problem == "regression")
         X_tr, X_te, y_tr, y_te = train_test_split(
             X,
             y,
             test_size=test_frac,
             random_state=42,
-            stratify=y if strat else None,
+            stratify=strat,
         )
         try:
             m_test, m_train, pipe_real, le = ref_train_predict_metrics_train_test(
@@ -3317,13 +3327,13 @@ def render_model_validation_sandbox_tab() -> None:
         y_syn = synth_df[target]
         ms = y_syn.notna()
         X_syn, y_syn = X_syn.loc[ms], y_syn.loc[ms]
-        strat_s = problem != "regression" and y_syn.nunique() > 1
+        strat_s = _safe_stratify_target(y_syn, problem == "regression")
         X_str, _x, y_str, _y = train_test_split(
             X_syn,
             y_syn,
             test_size=test_frac,
             random_state=42,
-            stratify=y_syn if strat_s else None,
+            stratify=strat_s,
         )
         if le is not None:
             ok = y_str.astype(str).isin(set(le.classes_))
