@@ -126,6 +126,7 @@ def inject_theme() -> None:
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
   html, body, [class*="css"] {{ font-family: 'Inter', system-ui, sans-serif !important; }}
+  p, li, label, [data-testid="stMarkdownContainer"] {{ font-size: 0.92rem; }}
   .stApp {{ background: #f5f7fb !important; color: #1f2937; }}
   [data-testid="stSidebar"] {{
     background: linear-gradient(180deg, #fffdf8 0%, #fff8ee 45%, #fffdf9 100%);
@@ -144,7 +145,7 @@ def inject_theme() -> None:
     box-shadow: 0 6px 18px rgba(179, 118, 42, 0.08);
   }}
   .sidebar-kicker {{
-    font-size: 0.67rem;
+    font-size: 0.72rem;
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -160,7 +161,8 @@ def inject_theme() -> None:
   .sidebar-subtitle {{
     margin-top: 0.2rem;
     color: #6b7280;
-    font-size: 0.82rem;
+    font-size: 0.78rem;
+    font-weight: 600;
   }}
   .sidebar-card {{
     background: #ffffff;
@@ -171,7 +173,7 @@ def inject_theme() -> None:
     box-shadow: 0 4px 12px rgba(17, 24, 39, 0.04);
   }}
   .sidebar-card-title {{
-    font-size: 0.84rem;
+    font-size: 0.88rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -180,7 +182,7 @@ def inject_theme() -> None:
   }}
   .sidebar-helper {{
     color: #4b5563;
-    font-size: 0.83rem;
+    font-size: 0.85rem;
     font-weight: 500;
     margin-top: 0.38rem;
   }}
@@ -348,7 +350,7 @@ def inject_theme() -> None:
   }}
   .section-title {{
     color: {ACCENT};
-    font-size: 0.82rem;
+    font-size: 0.9rem;
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -356,7 +358,7 @@ def inject_theme() -> None:
   }}
   .minor-title {{
     color: #111827;
-    font-size: 0.95rem;
+    font-size: 0.98rem;
     font-weight: 600;
     margin-bottom: 0.35rem;
   }}
@@ -410,6 +412,7 @@ def inject_theme() -> None:
     background: rgba(255,255,255,0.65) !important;
     color: #4b5563 !important;
     font-weight: 600 !important;
+    font-size: 0.92rem !important;
     min-height: 2.2rem !important;
     padding: 0.2rem 0.95rem !important;
     transition: all 0.18s ease;
