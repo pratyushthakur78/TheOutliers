@@ -145,24 +145,33 @@ def inject_theme() -> None:
     box-shadow: 0 6px 18px rgba(179, 118, 42, 0.08);
   }}
   .sidebar-kicker {{
-    font-size: 0.72rem;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: #a16207;
-    margin-bottom: 0.2rem;
-  }}
-  .sidebar-title {{
-    font-size: 1.15rem;
+    font-size: 1.42rem;
     font-weight: 800;
-    color: #111827;
+    color: #1f2937;
     line-height: 1.2;
+    margin-bottom: 0.12rem;
   }}
   .sidebar-subtitle {{
-    margin-top: 0.2rem;
-    color: #6b7280;
-    font-size: 0.78rem;
+    margin-top: 0;
+    color: #9ca3af;
+    font-size: 0.8rem;
     font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }}
+  .arch-main-title {{
+    font-size: 1.42rem;
+    font-weight: 800;
+    color: #1f2937;
+    line-height: 1.2;
+  }}
+  .arch-subtitle {{
+    margin-top: 0.04rem;
+    color: #9ca3af;
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }}
   .sidebar-card {{
     background: #ffffff;
@@ -3548,7 +3557,15 @@ def render_architect_unified_tab() -> None:
 
 def render_artifact_panel() -> None:
     st.markdown('<div class="block-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">Artifact (Output)</div>', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div>
+            <div class="arch-main-title">Artifact</div>
+            <div class="arch-subtitle">Output</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     final_df: pd.DataFrame | None = None
     final_label = ""
@@ -3628,16 +3645,11 @@ def main() -> None:
     st.markdown(
         """
         <div style="padding: 0.25rem 0 0.9rem 0;">
-            <div style="font-size: 2rem; font-weight: 800; letter-spacing: 0.2px; color: #1f2937;">
+            <div class="arch-main-title" style="font-size: 1.42rem;">
                 Synthetic Data Foundry
-                <span style="color: #FFB347;">(Core Engine)</span>
             </div>
-            <div style="margin-top: 0.22rem; display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;">
-                <span style="font-size: 0.82rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #92400e; background: #fff3e0; border: 1px solid #f7d7a6; border-radius: 999px; padding: 0.16rem 0.52rem;">Input</span>
-                <span style="font-size: 0.82rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #92400e; background: #fff3e0; border: 1px solid #f7d7a6; border-radius: 999px; padding: 0.16rem 0.52rem;">Core Engine</span>
-                <span style="font-size: 0.82rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #92400e; background: #fff3e0; border: 1px solid #f7d7a6; border-radius: 999px; padding: 0.16rem 0.52rem;">Output</span>
-            </div>
-            <div style="margin-top: 0.25rem; color: #6b7280; font-size: 0.98rem;">
+            <div class="arch-subtitle">Core Engine</div>
+            <div style="margin-top: 0.25rem; color: #6b7280; font-size: 0.94rem;">
                 End-to-end: profile your seed, generate synthetic data with the Architect, auto-validate with the critic, and export.
             </div>
         </div>
