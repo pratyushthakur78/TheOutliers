@@ -23,8 +23,8 @@ Gateway is the first control plane for all runs.
   - Uploaded files are parsed and stored in `st.session_state.data_registry`
   - Upload automatically routes user to Lens
 - **Testing Demo Files**
-  - `Save Demo Files` creates deterministic CSVs in `demo_files/`
-  - `Load Demo Files` injects those files directly into Gateway registry
+  - `Load Demo Files` reads packaged CSVs from repository folder `demo_files/`
+  - No local/system save step is required
 - **Generate via AI Astra**
   - Routes directly to Architect in natural language path
 
@@ -48,6 +48,12 @@ Architect execution is driven by Gateway `Type of Input`.
 - **Natural Language path**
   - Reads prompt from Gateway prompt box
   - Generates tabular output via Azure/LLM flow
+- **Both path (Seed + Natural Language)**
+  - Uses seed dataset + Gateway prompt together
+  - Applies privacy controls on seed lens before generation
+  - Supports normalized vs skewed output profile
+- **Route visibility**
+  - Architect shows a `Current route` badge so users can see active path instantly
 
 ### Critic
 
@@ -81,11 +87,12 @@ Artifact consolidates final outputs from current session:
 - `critic_js_df`, `critic_utility_df`, `critic_guardrails_report` -> critic outputs
 - `mv_bundle` -> validation sandbox result payload
 - `gateway_input_mode`, `gateway_nl_prompt` -> gateway input controls
+- Dataset dropdowns hide technical `Registry::` prefixes for cleaner business labels
 
 ## 6) Demo Flow (Recommended for Presentations)
 
 1. In Gateway, choose `Seed Data` or `Both`
-2. Click `Load Demo Files`
+2. Click `Load Demo Files` (loads packaged files from repo)
 3. Lens opens automatically and shows profile
 4. Run Architect generation
 5. Run Critic
@@ -98,6 +105,6 @@ Artifact consolidates final outputs from current session:
 - Shared modules:
   - `modules/data_processing.py`
   - `modules/synthetic_engine.py`
-- Fixed demo files path: `demo_files/`
+- Packaged demo files live in: `demo_files/`
 - Help file path: `HELP_ME.md`
 
