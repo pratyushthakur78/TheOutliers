@@ -3441,37 +3441,28 @@ def main() -> None:
     )
 
     default_tabs = [
-        "Data Preview",
-        "Join Builder",
-        "Analytics",
-        "Synthetic Data Generator",
+        "Architect-2",
         "AI Astra",
         "Lens",
-        "Architect",
+        "Architect-1",
         "Critic",
         "Model Validation Sandbox",
     ]
     if st.session_state.get("jump_to_lens"):
         tab_labels = [
             "Lens",
-            "Data Preview",
-            "Join Builder",
-            "Analytics",
-            "Synthetic Data Generator",
+            "Architect-2",
             "AI Astra",
-            "Architect",
+            "Architect-1",
             "Critic",
             "Model Validation Sandbox",
         ]
     elif st.session_state.get("jump_to_ai_astra"):
         tab_labels = [
             "AI Astra",
-            "Data Preview",
-            "Join Builder",
-            "Analytics",
-            "Synthetic Data Generator",
+            "Architect-2",
             "Lens",
-            "Architect",
+            "Architect-1",
             "Critic",
             "Model Validation Sandbox",
         ]
@@ -3479,13 +3470,10 @@ def main() -> None:
         tab_labels = default_tabs
 
     tab_renderer = {
-        "Data Preview": render_preview_tab,
-        "Join Builder": render_join_builder_tab,
-        "Analytics": render_analytics_tab,
-        "Synthetic Data Generator": render_synthetic_generator_tab,
+        "Architect-2": render_synthetic_generator_tab,
         "AI Astra": render_data_bot_tab,
         "Lens": render_lens_tab,
-        "Architect": render_architect_tab,
+        "Architect-1": render_architect_tab,
         "Critic": render_critic_tab,
         "Model Validation Sandbox": render_model_validation_sandbox_tab,
     }
