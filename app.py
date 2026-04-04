@@ -337,6 +337,34 @@ def inject_theme() -> None:
     font-weight: 600 !important;
   }}
   .stButton > button[kind="primary"]:hover {{ background: #e59a3a !important; }}
+  [data-testid="stSidebar"] .stButton > button[kind="primary"] {{
+    position: relative;
+    overflow: hidden;
+    border-radius: 12px !important;
+    border: 1px solid rgba(245, 166, 35, 0.5) !important;
+    background: linear-gradient(145deg, rgba(255, 224, 170, 0.95) 0%, rgba(255, 193, 102, 0.94) 100%) !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.68), 0 8px 16px rgba(245, 158, 11, 0.2) !important;
+    color: #1f2937 !important;
+    font-weight: 700 !important;
+  }}
+  [data-testid="stSidebar"] .stButton > button[kind="primary"]::before {{
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -130%;
+    width: 56%;
+    height: 100%;
+    transform: skewX(-16deg);
+    background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,0.52), rgba(255,255,255,0));
+    animation: sidebarCtaShine 3.7s ease-in-out infinite;
+    pointer-events: none;
+  }}
+  @keyframes sidebarCtaShine {{
+    0% {{ left: -130%; opacity: 0; }}
+    14% {{ opacity: 1; }}
+    52% {{ left: 145%; opacity: 0.95; }}
+    100% {{ left: 145%; opacity: 0; }}
+  }}
   .stTabs [data-baseweb="tab-list"] {{
     gap: 0.4rem;
     background: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(255,250,243,0.92));
@@ -388,6 +416,14 @@ def parse_uploaded_file(file_name: str, file_bytes: bytes) -> dict[str, pd.DataF
     if lower.endswith(".csv"):
         return {file_name: pd.read_csv(io.BytesIO(file_bytes))}
 
+    if lower.endswith(".json"):
+        data = json.loads(file_bytes.decode("utf-8-sig"))
+        if isinstance(data, list):
+            return {file_name: pd.json_normalize(data)}
+        if isinstance(data, dict):
+            return {file_name: pd.json_normalize([data])}
+        raise ValueError("Unsupported JSON structure. Use object or array of objects.")
+
     if lower.endswith(".xlsx"):
         xl = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
         return {f"{file_name}::{sheet}": xl.parse(sheet) for sheet in xl.sheet_names}
@@ -396,7 +432,7 @@ def parse_uploaded_file(file_name: str, file_bytes: bytes) -> dict[str, pd.DataF
         xl = pd.ExcelFile(io.BytesIO(file_bytes), engine="xlrd")
         return {f"{file_name}::{sheet}": xl.parse(sheet) for sheet in xl.sheet_names}
 
-    raise ValueError("Unsupported file format. Please upload CSV or Excel files.")
+    raise ValueError("Unsupported file format. Please upload CSV, Excel, or JSON files.")
 
 
 @st.cache_data(show_spinner=False)
@@ -1168,6 +1204,8 @@ def init_state() -> None:
         st.session_state.synthetic_df: pd.DataFrame | None = None
     if "bot_generated_df" not in st.session_state:
         st.session_state.bot_generated_df: pd.DataFrame | None = None
+    if "jump_to_ai_astra" not in st.session_state:
+        st.session_state.jump_to_ai_astra = False
 
 
 def restore_session_snapshot(max_age_seconds: int) -> bool:
@@ -1232,20 +1270,24 @@ def render_sidebar() -> None:
 
     st.sidebar.markdown('<div class="sidebar-card">', unsafe_allow_html=True)
     st.sidebar.markdown(
-        '<div class="sidebar-card-title">Upload CSV / Excel files</div>',
+        '<div class="sidebar-card-title">Upload CSV / Excel / JSON files</div>',
         unsafe_allow_html=True,
     )
     uploads = st.sidebar.file_uploader(
-        "Upload CSV / Excel files",
-        type=["csv", "xlsx", "xls"],
+        "Upload CSV / Excel / JSON files",
+        type=["csv", "xlsx", "xls", "json"],
         accept_multiple_files=True,
         label_visibility="collapsed",
     )
     st.sidebar.markdown(
-        '<div class="sidebar-helper">200MB per file • CSV, XLSX, XLS</div>',
+        '<div class="sidebar-helper">200MB per file • CSV, XLSX, XLS, JSON</div>',
         unsafe_allow_html=True,
     )
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
+
+    if st.sidebar.button("✨ Generate via AI Astra", key="sidebar_jump_ai_astra", type="primary", use_container_width=True):
+        st.session_state.jump_to_ai_astra = True
+        st.rerun()
 
     if uploads:
         for file_obj in uploads:
@@ -2109,7 +2151,7 @@ def main() -> None:
     inject_theme()
     init_state()
     if st.session_state.get("_snapshot_restored"):
-        st.caption("Session recovered after idle (within last 5 minutes).")
+        st.caption("Session recovered after idle (within last 15 minutes).")
         st.session_state["_snapshot_restored"] = False
     render_sidebar()
 
@@ -2130,24 +2172,23 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    tab_preview, tab_join, tab_analytics, tab_synth, tab_bot = st.tabs(
-        ["Data Preview", "Join Builder", "Analytics", "Synthetic Data Generator", "AI Astra"]
-    )
+    default_tabs = ["Data Preview", "Join Builder", "Analytics", "Synthetic Data Generator", "AI Astra"]
+    if st.session_state.get("jump_to_ai_astra"):
+        tab_labels = ["AI Astra", "Data Preview", "Join Builder", "Analytics", "Synthetic Data Generator"]
+    else:
+        tab_labels = default_tabs
 
-    with tab_preview:
-        render_preview_tab()
-
-    with tab_join:
-        render_join_builder_tab()
-
-    with tab_analytics:
-        render_analytics_tab()
-
-    with tab_synth:
-        render_synthetic_generator_tab()
-
-    with tab_bot:
-        render_data_bot_tab()
+    tab_renderer = {
+        "Data Preview": render_preview_tab,
+        "Join Builder": render_join_builder_tab,
+        "Analytics": render_analytics_tab,
+        "Synthetic Data Generator": render_synthetic_generator_tab,
+        "AI Astra": render_data_bot_tab,
+    }
+    tabs = st.tabs(tab_labels)
+    for tab_obj, label in zip(tabs, tab_labels):
+        with tab_obj:
+            tab_renderer[label]()
 
     save_session_snapshot()
 
