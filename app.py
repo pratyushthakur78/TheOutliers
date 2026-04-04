@@ -3558,7 +3558,6 @@ def render_architect_unified_tab() -> None:
 
 
 def render_artifact_panel() -> None:
-    st.markdown('<div class="block-card">', unsafe_allow_html=True)
     st.markdown(
         """
         <div>
@@ -3568,6 +3567,7 @@ def render_artifact_panel() -> None:
         """,
         unsafe_allow_html=True,
     )
+    st.markdown('<div class="block-card">', unsafe_allow_html=True)
 
     final_df: pd.DataFrame | None = None
     final_label = ""
