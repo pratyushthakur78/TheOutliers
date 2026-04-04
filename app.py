@@ -1999,6 +1999,14 @@ def render_synthetic_generator_tab() -> None:
                 "TVAE",
                 "Diffusion-style bootstrap",
                 "AI Astra",
+                "Bootstrap (sample rows with replacement)",
+                "Subsample (without replacement)",
+                "Tile (repeat full table)",
+                "Tile + shuffle",
+                "Synthetic - perturb",
+                "Synthetic - independent",
+                "GAN (Architect style)",
+                "Diffusion (Architect style)",
             ],
             key="syn_model_choice",
         )
@@ -2097,6 +2105,50 @@ def render_synthetic_generator_tab() -> None:
                             target_rows,
                             custom_instruction=user_instruction,
                         )
+                    elif model_choice == "Bootstrap (sample rows with replacement)":
+                        candidate = private_df.sample(n=target_rows, replace=True, random_state=42 + attempt).reset_index(drop=True)
+                    elif model_choice == "Subsample (without replacement)":
+                        if target_rows <= len(private_df):
+                            candidate = private_df.sample(n=target_rows, replace=False, random_state=42 + attempt).reset_index(drop=True)
+                        else:
+                            candidate = private_df.sample(n=target_rows, replace=True, random_state=42 + attempt).reset_index(drop=True)
+                    elif model_choice == "Tile (repeat full table)":
+                        if len(private_df) == 0:
+                            candidate = private_df.copy()
+                        else:
+                            reps = int(np.ceil(target_rows / len(private_df)))
+                            candidate = pd.concat([private_df] * reps, ignore_index=True).head(target_rows).reset_index(drop=True)
+                    elif model_choice == "Tile + shuffle":
+                        if len(private_df) == 0:
+                            candidate = private_df.copy()
+                        else:
+                            reps = int(np.ceil(target_rows / len(private_df)))
+                            tiled = pd.concat([private_df] * reps, ignore_index=True)
+                            candidate = tiled.sample(frac=1.0, random_state=42 + attempt).head(target_rows).reset_index(drop=True)
+                    elif model_choice == "Synthetic - perturb":
+                        candidate = generate_bootstrap_synthetic(private_df, target_rows)
+                    elif model_choice == "Synthetic - independent":
+                        synth_cols: dict[str, Any] = {}
+                        for col in private_df.columns:
+                            s = private_df[col]
+                            if pd.api.types.is_numeric_dtype(s):
+                                mu = float(pd.to_numeric(s, errors="coerce").mean() or 0.0)
+                                sd = float(pd.to_numeric(s, errors="coerce").std() or 1.0)
+                                synth_cols[col] = np.random.normal(mu, max(sd, 1e-9), size=target_rows)
+                            else:
+                                vals = s.dropna().astype(str)
+                                if vals.empty:
+                                    synth_cols[col] = [np.nan] * target_rows
+                                else:
+                                    synth_cols[col] = np.random.choice(vals.values, size=target_rows, replace=True)
+                        candidate = pd.DataFrame(synth_cols)
+                    elif model_choice == "GAN (Architect style)":
+                        if SDV_AVAILABLE:
+                            candidate = generate_sdv_synthetic(private_df, target_rows, "CTGAN")
+                        else:
+                            candidate = generate_bootstrap_synthetic(private_df, target_rows)
+                    elif model_choice == "Diffusion (Architect style)":
+                        candidate = generate_bootstrap_synthetic(private_df, target_rows)
                     else:
                         candidate = generate_bootstrap_synthetic(private_df, target_rows)
 
