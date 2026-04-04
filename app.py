@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import sys
 import html
 import pickle
 import time
@@ -46,6 +47,33 @@ SESSION_SNAPSHOT_TTL_SECONDS = 900
 
 BRAND_NAME = "The Outliers"
 ACCENT = "#FFB347"
+REFERENCE_HACKATHON_DIR = os.path.join(HACKATHON_DIR, "Hackathon")
+
+# Optional: load exact ML validation helpers from reference Hackathon folder.
+REF_ML_EVAL_AVAILABLE = False
+ref_guess_target_column = None
+ref_infer_problem_kind = None
+ref_default_algorithm = None
+ref_ml_fidelity_rating_extended = None
+ref_permutation_importance_df = None
+ref_train_on_synthetic_eval_on_real = None
+ref_train_predict_metrics_train_test = None
+if os.path.isdir(REFERENCE_HACKATHON_DIR):
+    if REFERENCE_HACKATHON_DIR not in sys.path:
+        sys.path.insert(0, REFERENCE_HACKATHON_DIR)
+    try:
+        from foundry_ml_eval import (
+            guess_target_column as ref_guess_target_column,
+            infer_problem_kind as ref_infer_problem_kind,
+            default_algorithm as ref_default_algorithm,
+            ml_fidelity_rating_extended as ref_ml_fidelity_rating_extended,
+            permutation_importance_df as ref_permutation_importance_df,
+            train_on_synthetic_eval_on_real as ref_train_on_synthetic_eval_on_real,
+            train_predict_metrics_train_test as ref_train_predict_metrics_train_test,
+        )
+        REF_ML_EVAL_AVAILABLE = True
+    except Exception:
+        REF_ML_EVAL_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -1522,6 +1550,8 @@ def init_state() -> None:
         st.session_state.bot_generated_df: pd.DataFrame | None = None
     if "jump_to_ai_astra" not in st.session_state:
         st.session_state.jump_to_ai_astra = False
+    if "jump_to_lens" not in st.session_state:
+        st.session_state.jump_to_lens = False
     if "architect_generated_df" not in st.session_state:
         st.session_state.architect_generated_df: pd.DataFrame | None = None
     if "architect_seed_label" not in st.session_state:
@@ -1534,6 +1564,8 @@ def init_state() -> None:
         st.session_state.critic_utility_df: pd.DataFrame | None = None
     if "syn_last_guardrails" not in st.session_state:
         st.session_state.syn_last_guardrails: dict[str, Any] | None = None
+    if "mv_bundle" not in st.session_state:
+        st.session_state.mv_bundle: dict[str, Any] | None = None
 
 
 def restore_session_snapshot(max_age_seconds: int) -> bool:
@@ -1627,6 +1659,7 @@ def render_sidebar() -> None:
                 parsed_tables = parse_uploaded_file(file_obj.name, raw)
                 st.session_state.data_registry.update(parsed_tables)
                 st.session_state.file_signatures.add(signature)
+                st.session_state.jump_to_lens = True
                 st.toast(f"Loaded: {file_obj.name}")
             except Exception as exc:
                 st.sidebar.error(f"{file_obj.name}: {exc}")
@@ -3029,15 +3062,18 @@ def render_critic_tab() -> None:
             try:
                 synth_df = pd.read_csv(io.BytesIO(up.getvalue()), low_memory=False)
                 js_df, utility_df = compute_fidelity_metrics(seed_df, synth_df)
+                guardrails_report = validate_synthetic_dataset(seed_df, synth_df, [])
                 st.session_state.critic_synth_df = synth_df
                 st.session_state.critic_js_df = js_df
                 st.session_state.critic_utility_df = utility_df
+                st.session_state["critic_guardrails_report"] = guardrails_report
             except Exception as exc:
                 st.error(f"Critic failed: {exc}")
 
     synth_df = st.session_state.get("critic_synth_df")
     js_df = st.session_state.get("critic_js_df")
     utility_df = st.session_state.get("critic_utility_df")
+    guardrails_report = st.session_state.get("critic_guardrails_report") or {}
     if synth_df is not None and js_df is not None and utility_df is not None:
         avg_js = float(pd.to_numeric(js_df.get("js_divergence", pd.Series(dtype=float)), errors="coerce").dropna().mean() or 0.0)
         corr_sim = utility_df.loc[utility_df["metric"] == "correlation_similarity", "value"]
@@ -3046,6 +3082,11 @@ def render_critic_tab() -> None:
             st.success(f"Critic verdict: PASS | avg JS={avg_js:.4f}" + (f" | corr similarity={corr_val:.3f}" if not np.isnan(corr_val) else ""))
         else:
             st.warning(f"Critic verdict: REVIEW | avg JS={avg_js:.4f}" + (f" | corr similarity={corr_val:.3f}" if not np.isnan(corr_val) else ""))
+
+        st.markdown("**Guardrails**")
+        render_guardrails_table(guardrails_report)
+        render_seed_synth_corr(seed_df, synth_df, "critic_corr")
+
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("**Per-column divergence**")
@@ -3053,13 +3094,87 @@ def render_critic_tab() -> None:
         with c2:
             st.markdown("**Utility metrics**")
             st.dataframe(utility_df, use_container_width=True, height=220)
+
+        c1, c2 = st.columns((1.1, 0.9))
+        with c1:
+            st.markdown("**Schema (synthetic)**")
+            schema_df = pd.DataFrame(
+                {
+                    "column": synth_df.columns,
+                    "dtype": [str(t) for t in synth_df.dtypes],
+                    "non_null_count": synth_df.notna().sum().values,
+                    "null_count": synth_df.isna().sum().values,
+                    "unique_count": synth_df.nunique(dropna=True).values,
+                }
+            )
+            if len(synth_df) > 0:
+                schema_df["missing_rate_%"] = ((schema_df["null_count"] / len(synth_df)) * 100).round(2)
+            else:
+                schema_df["missing_rate_%"] = 0.0
+            st.dataframe(schema_df, use_container_width=True, height=320)
+        with c2:
+            dtype_counts = synth_df.dtypes.astype(str).value_counts()
+            fig_dtype = px.pie(
+                values=dtype_counts.values,
+                names=dtype_counts.index,
+                title="Types",
+                hole=0.4,
+                color_discrete_sequence=px.colors.qualitative.Set2,
+            )
+            fig_dtype.update_layout(height=320, margin=dict(t=40, l=20, r=20, b=20))
+            st.plotly_chart(fig_dtype, use_container_width=True, key="critic_dtype")
+
+        st.markdown("**Column statistics (synthetic)**")
+        stats_df = build_column_statistics(synth_df)
+        st.dataframe(stats_df, use_container_width=True, height=340)
+
+        st.markdown("**Preview**")
+        preview_n = int(
+            st.number_input(
+                "Rows to preview (critic upload)",
+                min_value=1,
+                max_value=max(1, len(synth_df)),
+                value=min(25, len(synth_df)),
+                step=1,
+                key="critic_preview_rows",
+            )
+        )
+        p1, p2 = st.columns(2)
+        with p1:
+            st.caption("Head")
+            st.dataframe(synth_df.head(preview_n), use_container_width=True, height=230)
+        with p2:
+            st.caption("Tail")
+            st.dataframe(synth_df.tail(min(preview_n, len(synth_df))), use_container_width=True, height=230)
+
+        st.download_button(
+            "Download Critic upload report (JSON)",
+            data=json.dumps(
+                {
+                    "avg_js": avg_js,
+                    "corr_similarity": None if np.isnan(corr_val) else corr_val,
+                    "js": js_df.to_dict(orient="records"),
+                    "utility": utility_df.to_dict(orient="records"),
+                    "guardrails": guardrails_report,
+                },
+                indent=2,
+                default=str,
+            ).encode("utf-8"),
+            file_name="critic_upload_report.json",
+            mime="application/json",
+            use_container_width=True,
+            key="critic_json_dl",
+        )
     st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_model_validation_sandbox_tab() -> None:
     st.markdown('<div class="block-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Model Validation Sandbox</div>', unsafe_allow_html=True)
-    st.caption("Baseline check: train on real vs synthetic and compare performance on the same real holdout.")
+    st.caption(
+        "Baseline model only - train on real vs synthetic and compare on same real holdout "
+        "(reference flow from Hackathon folder)."
+    )
 
     options = _advanced_dataset_options()
     seed_only = {k: v for k, v in options.items() if k not in ("Architect output", "AI Astra output")}
@@ -3084,79 +3199,157 @@ def render_model_validation_sandbox_tab() -> None:
     real_df = real_df[common_cols]
     synth_df = synth_df[common_cols]
 
-    target = st.selectbox("Target column", common_cols, key="mv_target")
+    if not REF_ML_EVAL_AVAILABLE:
+        st.error(
+            f"Reference ML sandbox helpers are unavailable. Ensure this folder exists: {REFERENCE_HACKATHON_DIR}"
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    target_mode = st.radio(
+        "Target column",
+        ["Auto-detect", "Choose manually", "No target - skip supervised ML"],
+        horizontal=True,
+        key="mv_target_mode",
+    )
+    target = None
+    if target_mode == "Auto-detect":
+        target = ref_guess_target_column(real_df, set())
+        if target:
+            st.success(f"Detected candidate target: `{target}`")
+        else:
+            st.warning("No clear target column detected. Choose manually.")
+    elif target_mode == "Choose manually":
+        target = st.selectbox("Target", common_cols, key="mv_target_manual")
+    else:
+        st.info("Supervised ML skipped.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    if not target:
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
     feature_cols = [c for c in common_cols if c != target]
     if not feature_cols:
         st.warning("Need at least one feature column besides target.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
-    test_size = st.slider("Real holdout fraction", 0.1, 0.4, 0.25, 0.05, key="mv_test_size")
 
-    if st.button("Run sandbox validation", type="primary", use_container_width=True, key="mv_run"):
-        try:
-            from sklearn.compose import ColumnTransformer
-            from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
-            from sklearn.impute import SimpleImputer
-            from sklearn.metrics import accuracy_score, f1_score, mean_absolute_error, mean_squared_error, r2_score
-            from sklearn.model_selection import train_test_split
-            from sklearn.pipeline import Pipeline
-            from sklearn.preprocessing import OneHotEncoder
-        except Exception:
-            st.error("scikit-learn is required for Model Validation Sandbox. Please add `scikit-learn` to requirements.")
-            st.markdown("</div>", unsafe_allow_html=True)
-            return
+    y_ser = real_df[target]
+    problem = ref_infer_problem_kind(y_ser)
+    algo_opts = (
+        ["hgb_classifier", "rf_classifier", "logreg"]
+        if problem != "regression"
+        else ["hgb_regressor", "rf_regressor", "ridge"]
+    )
+    default_algo = ref_default_algorithm(problem)
+    algo_idx = algo_opts.index(default_algo) if default_algo in algo_opts else 0
+    test_frac = st.slider("Holdout fraction (real data)", 0.1, 0.4, 0.25, 0.05, key="mv_test_frac")
+    algo_choice = st.selectbox("Algorithm", algo_opts, index=algo_idx, key="mv_algo")
 
-        merged_real = real_df.dropna(subset=[target]).copy()
-        merged_synth = synth_df.dropna(subset=[target]).copy()
-        if merged_real.empty or merged_synth.empty:
-            st.error("Target column has too many missing values.")
-            st.markdown("</div>", unsafe_allow_html=True)
-            return
-
-        is_regression = pd.api.types.is_numeric_dtype(merged_real[target]) and merged_real[target].nunique(dropna=True) > 15
-        X_real = merged_real[feature_cols]
-        y_real = merged_real[target]
-        X_synth = merged_synth[feature_cols]
-        y_synth = merged_synth[target]
-
-        cat_cols = [c for c in feature_cols if not pd.api.types.is_numeric_dtype(X_real[c])]
-        num_cols = [c for c in feature_cols if c not in cat_cols]
-        preprocessor = ColumnTransformer(
-            transformers=[
-                ("num", Pipeline([("imputer", SimpleImputer(strategy="median"))]), num_cols),
-                ("cat", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("onehot", OneHotEncoder(handle_unknown="ignore"))]), cat_cols),
-            ],
-            remainder="drop",
+    if st.button("Run baseline validation", type="primary", use_container_width=True, key="mv_run"):
+        from sklearn.model_selection import train_test_split
+        X = real_df[feature_cols].copy()
+        y = real_df[target]
+        m = y.notna()
+        X, y = X.loc[m], y.loc[m]
+        strat = problem != "regression" and y.nunique() > 1
+        X_tr, X_te, y_tr, y_te = train_test_split(
+            X,
+            y,
+            test_size=test_frac,
+            random_state=42,
+            stratify=y if strat else None,
         )
-        model = HistGradientBoostingRegressor(random_state=42) if is_regression else HistGradientBoostingClassifier(random_state=42)
-        pipe = Pipeline([("prep", preprocessor), ("model", model)])
+        try:
+            m_test, m_train, pipe_real, le = ref_train_predict_metrics_train_test(
+                X_tr, y_tr, X_te, y_te, problem, algo_choice
+            )
+        except Exception as e:
+            st.error(f"Real-data model failed: {e}")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
 
-        stratify = None if is_regression else y_real
-        X_train, X_test, y_train, y_test = train_test_split(X_real, y_real, test_size=test_size, random_state=42, stratify=stratify)
+        if target not in synth_df.columns:
+            st.error(f"Synthetic dataset does not contain target column `{target}`.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+        X_syn = synth_df[feature_cols].copy()
+        y_syn = synth_df[target]
+        ms = y_syn.notna()
+        X_syn, y_syn = X_syn.loc[ms], y_syn.loc[ms]
+        strat_s = problem != "regression" and y_syn.nunique() > 1
+        X_str, _x, y_str, _y = train_test_split(
+            X_syn,
+            y_syn,
+            test_size=test_frac,
+            random_state=42,
+            stratify=y_syn if strat_s else None,
+        )
+        if le is not None:
+            ok = y_str.astype(str).isin(set(le.classes_))
+            X_str, y_str = X_str.loc[ok], y_str.loc[ok]
+        try:
+            m_syn, _pipe_syn = ref_train_on_synthetic_eval_on_real(
+                X_str, y_str, X_te, y_te, problem, algo_choice, le
+            )
+        except Exception as e:
+            st.error(f"Synthetic-to-real evaluation failed: {e}")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
 
-        pipe.fit(X_train, y_train)
-        pred_train = pipe.predict(X_train)
-        pred_test = pipe.predict(X_test)
+        keys = ("r2", "mae", "rmse") if problem == "regression" else ("roc_auc", "f1", "precision", "recall", "accuracy", "gini", "ks")
+        rating = ref_ml_fidelity_rating_extended(
+            m_train, m_test, m_syn, keys=tuple(k for k in keys if k in m_test and k in m_syn)
+        )
+        if problem != "regression" and le is not None:
+            y_perm = pd.Series(le.transform(y_tr.astype(str)), index=X_tr.index)
+        else:
+            y_perm = pd.to_numeric(y_tr, errors="coerce").fillna(0)
+        imp = ref_permutation_importance_df(pipe_real, X_tr, y_perm)
+        st.session_state.mv_bundle = {
+            "seed_label": seed_label,
+            "synth_label": synth_label,
+            "target": target,
+            "problem": problem,
+            "real_train_metrics": m_train,
+            "real_test_metrics": m_test,
+            "syn_on_real_test_metrics": m_syn,
+            "rating": rating,
+            "importance": imp,
+        }
+        st.rerun()
 
-        pipe_syn = Pipeline([("prep", preprocessor), ("model", model)])
-        pipe_syn.fit(X_synth, y_synth)
-        pred_syn_test = pipe_syn.predict(X_test)
+    b = st.session_state.get("mv_bundle")
+    if b and b.get("seed_label") == seed_label and b.get("synth_label") == synth_label:
+        st.divider()
+        st.subheader("Results")
+        rating = b.get("rating") or {}
+        score = float(rating.get("rating_out_of_5") or 0)
+        st.metric("Final alignment score (0-5)", f"{score:.2f}")
+        m_tr = b.get("real_train_metrics") or {}
+        m_te = b.get("real_test_metrics") or {}
+        m_sy = b.get("syn_on_real_test_metrics") or {}
+        problem = str(b.get("problem") or "binary")
 
-        if is_regression:
+        if problem == "regression":
             rows = [
-                {"Metric": "R2", "Train": r2_score(y_train, pred_train), "Test": r2_score(y_test, pred_test), "Synthetic": r2_score(y_test, pred_syn_test)},
-                {"Metric": "MAE", "Train": mean_absolute_error(y_train, pred_train), "Test": mean_absolute_error(y_test, pred_test), "Synthetic": mean_absolute_error(y_test, pred_syn_test)},
-                {"Metric": "RMSE", "Train": float(np.sqrt(mean_squared_error(y_train, pred_train))), "Test": float(np.sqrt(mean_squared_error(y_test, pred_test))), "Synthetic": float(np.sqrt(mean_squared_error(y_test, pred_syn_test)))},
+                {"Metric": "R2", "Train": m_tr.get("r2"), "Test": m_te.get("r2"), "Synthetic": m_sy.get("r2")},
+                {"Metric": "MAE", "Train": m_tr.get("mae"), "Test": m_te.get("mae"), "Synthetic": m_sy.get("mae")},
+                {"Metric": "RMSE", "Train": m_tr.get("rmse"), "Test": m_te.get("rmse"), "Synthetic": m_sy.get("rmse")},
             ]
         else:
-            avg_mode = "binary" if y_test.nunique() == 2 else "weighted"
             rows = [
-                {"Metric": "Accuracy", "Train": accuracy_score(y_train, pred_train), "Test": accuracy_score(y_test, pred_test), "Synthetic": accuracy_score(y_test, pred_syn_test)},
-                {"Metric": "F1", "Train": f1_score(y_train, pred_train, average=avg_mode), "Test": f1_score(y_test, pred_test, average=avg_mode), "Synthetic": f1_score(y_test, pred_syn_test, average=avg_mode)},
+                {"Metric": "KS", "Train": m_tr.get("ks"), "Test": m_te.get("ks"), "Synthetic": m_sy.get("ks")},
+                {"Metric": "Gini", "Train": m_tr.get("gini"), "Test": m_te.get("gini"), "Synthetic": m_sy.get("gini")},
+                {"Metric": "ROC AUC", "Train": m_tr.get("roc_auc"), "Test": m_te.get("roc_auc"), "Synthetic": m_sy.get("roc_auc")},
+                {"Metric": "Precision", "Train": m_tr.get("precision"), "Test": m_te.get("precision"), "Synthetic": m_sy.get("precision")},
+                {"Metric": "Recall", "Train": m_tr.get("recall"), "Test": m_te.get("recall"), "Synthetic": m_sy.get("recall")},
+                {"Metric": "Accuracy", "Train": m_tr.get("accuracy"), "Test": m_te.get("accuracy"), "Synthetic": m_sy.get("accuracy")},
+                {"Metric": "F1", "Train": m_tr.get("f1"), "Test": m_te.get("f1"), "Synthetic": m_sy.get("f1")},
             ]
-
         score_df = pd.DataFrame(rows)
-        st.dataframe(score_df, use_container_width=True, height=220)
+        st.dataframe(score_df, use_container_width=True, hide_index=True, height=260)
         fig = px.bar(
             score_df.melt(id_vars="Metric", value_vars=["Train", "Test", "Synthetic"], var_name="Split", value_name="Value"),
             x="Metric",
@@ -3164,10 +3357,17 @@ def render_model_validation_sandbox_tab() -> None:
             color="Split",
             barmode="group",
             color_discrete_sequence=px.colors.qualitative.Set2,
-            title="Train vs Test vs Synthetic",
+            title="Metrics: real train vs real test vs synthetic-trained on real holdout",
         )
-        fig.update_layout(height=360, margin=dict(t=40, l=20, r=20, b=20))
+        fig.update_layout(height=400, margin=dict(t=40, l=20, r=20, b=20))
         st.plotly_chart(fig, use_container_width=True)
+
+        for line in rating.get("details") or []:
+            st.caption(line)
+        imp = b.get("importance")
+        if isinstance(imp, pd.DataFrame) and not imp.empty:
+            with st.expander("Permutation importance (real train)", expanded=False):
+                st.dataframe(imp, use_container_width=True, hide_index=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -3217,7 +3417,19 @@ def main() -> None:
         "Critic",
         "Model Validation Sandbox",
     ]
-    if st.session_state.get("jump_to_ai_astra"):
+    if st.session_state.get("jump_to_lens"):
+        tab_labels = [
+            "Lens",
+            "Data Preview",
+            "Join Builder",
+            "Analytics",
+            "Synthetic Data Generator",
+            "AI Astra",
+            "Architect",
+            "Critic",
+            "Model Validation Sandbox",
+        ]
+    elif st.session_state.get("jump_to_ai_astra"):
         tab_labels = [
             "AI Astra",
             "Data Preview",
@@ -3247,6 +3459,8 @@ def main() -> None:
     for tab_obj, label in zip(tabs, tab_labels):
         with tab_obj:
             tab_renderer[label]()
+    if st.session_state.get("jump_to_lens"):
+        st.session_state.jump_to_lens = False
     if st.session_state.get("jump_to_ai_astra"):
         st.session_state.jump_to_ai_astra = False
 
