@@ -2226,6 +2226,68 @@ def render_lens_tab() -> None:
     st.markdown('<div class="minor-title">Column Statistics</div>', unsafe_allow_html=True)
     stats_df = build_column_statistics(df)
     st.dataframe(stats_df, use_container_width=True, height=320)
+
+    st.markdown('<div class="minor-title">Explore & Export</div>', unsafe_allow_html=True)
+    lens_key = re.sub(r"[^A-Za-z0-9_]+", "_", source)[:50]
+    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    cat_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
+
+    ex1, ex2 = st.columns(2)
+    with ex1:
+        st.markdown("**Numerical**")
+        if num_cols:
+            ncol = st.selectbox("Numeric column", num_cols, key=f"lens_num_col_{lens_key}")
+            fig_num = px.histogram(
+                df,
+                x=ncol,
+                marginal="box",
+                color_discrete_sequence=[ACCENT],
+                title=f"Distribution — {ncol}",
+            )
+            fig_num.update_layout(height=320, margin=dict(t=40, l=20, r=20, b=20))
+            st.plotly_chart(fig_num, use_container_width=True, key=f"lens_num_fig_{lens_key}")
+        else:
+            st.info("No numeric columns found.")
+    with ex2:
+        st.markdown("**Categorical**")
+        if cat_cols:
+            ccol = st.selectbox("Categorical column", cat_cols, key=f"lens_cat_col_{lens_key}")
+            top_cat = df[ccol].astype(str).value_counts().head(15).reset_index()
+            top_cat.columns = ["value", "count"]
+            fig_cat = px.bar(
+                top_cat,
+                x="count",
+                y="value",
+                orientation="h",
+                color="count",
+                color_continuous_scale="Oranges",
+                title=f"Top values — {ccol}",
+            )
+            fig_cat.update_layout(height=320, margin=dict(t=40, l=20, r=20, b=20))
+            st.plotly_chart(fig_cat, use_container_width=True, key=f"lens_cat_fig_{lens_key}")
+        else:
+            st.info("No categorical columns found.")
+
+    export_base = re.sub(r"[^A-Za-z0-9._-]+", "_", source)[:36]
+    d1, d2 = st.columns(2)
+    with d1:
+        st.download_button(
+            "Download Lens data (CSV)",
+            data=df.to_csv(index=False).encode("utf-8"),
+            file_name=f"{export_base}_lens_export.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key=f"lens_csv_{lens_key}",
+        )
+    with d2:
+        st.download_button(
+            "Download Lens insights (Excel)",
+            data=export_dataframe_to_excel_bytes(df),
+            file_name=f"{export_base}_lens_insights.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"lens_xlsx_{lens_key}",
+        )
     st.markdown("</div>", unsafe_allow_html=True)
 
 
