@@ -173,33 +173,6 @@ def inject_theme() -> None:
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }}
-  .arch-strip {{
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0.55rem;
-    margin: 0.18rem 0 0.8rem 0;
-  }}
-  .arch-node {{
-    border: 1px solid #efd8b5;
-    background: linear-gradient(160deg, #fffaf2 0%, #fff3e0 100%);
-    border-radius: 12px;
-    padding: 0.5rem 0.62rem;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.8), 0 4px 10px rgba(245,158,11,0.08);
-  }}
-  .arch-node-title {{
-    font-size: 0.98rem;
-    font-weight: 800;
-    color: #1f2937;
-    line-height: 1.2;
-  }}
-  .arch-node-sub {{
-    margin-top: 0.08rem;
-    color: #9ca3af;
-    font-size: 0.74rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }}
   .sidebar-card {{
     background: #ffffff;
     border: 1px solid #efdfc8;
@@ -1754,9 +1727,9 @@ def render_sidebar() -> None:
     )
 
     st.sidebar.markdown('<div class="sidebar-card">', unsafe_allow_html=True)
-    st.sidebar.markdown('<div class="sidebar-card-title">Input Model</div>', unsafe_allow_html=True)
+    st.sidebar.markdown('<div class="sidebar-card-title">Type of Input</div>', unsafe_allow_html=True)
     gateway_mode = st.sidebar.radio(
-        "Input Model",
+        "Type of Input",
         ["Seed Data", "Natural Language", "Both"],
         key="gateway_input_mode",
         label_visibility="collapsed",
@@ -3685,26 +3658,6 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
-    st.markdown(
-        """
-        <div class="arch-strip">
-            <div class="arch-node">
-                <div class="arch-node-title">Gateway</div>
-                <div class="arch-node-sub">Input</div>
-            </div>
-            <div class="arch-node">
-                <div class="arch-node-title">Synthetic Data Foundry</div>
-                <div class="arch-node-sub">Core Engine</div>
-            </div>
-            <div class="arch-node">
-                <div class="arch-node-title">Artifact</div>
-                <div class="arch-node-sub">Output</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
     default_tabs = [
         "Lens",
         "Architect",
