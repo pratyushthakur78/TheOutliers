@@ -1206,6 +1206,16 @@ def init_state() -> None:
         st.session_state.bot_generated_df: pd.DataFrame | None = None
     if "jump_to_ai_astra" not in st.session_state:
         st.session_state.jump_to_ai_astra = False
+    if "architect_generated_df" not in st.session_state:
+        st.session_state.architect_generated_df: pd.DataFrame | None = None
+    if "architect_seed_label" not in st.session_state:
+        st.session_state.architect_seed_label: str = ""
+    if "critic_synth_df" not in st.session_state:
+        st.session_state.critic_synth_df: pd.DataFrame | None = None
+    if "critic_js_df" not in st.session_state:
+        st.session_state.critic_js_df: pd.DataFrame | None = None
+    if "critic_utility_df" not in st.session_state:
+        st.session_state.critic_utility_df: pd.DataFrame | None = None
 
 
 def restore_session_snapshot(max_age_seconds: int) -> bool:
@@ -2138,6 +2148,353 @@ def render_data_bot_tab() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _advanced_dataset_options() -> dict[str, pd.DataFrame]:
+    options: dict[str, pd.DataFrame] = {}
+    if st.session_state.get("joined_df") is not None and not st.session_state["joined_df"].empty:
+        options["Joined dataset"] = st.session_state["joined_df"]
+    for name, df in st.session_state.data_registry.items():
+        options[f"Registry::{name}"] = df
+    if st.session_state.get("synthetic_df") is not None and not st.session_state["synthetic_df"].empty:
+        options["Synthetic Generator output"] = st.session_state["synthetic_df"]
+    if st.session_state.get("architect_generated_df") is not None and not st.session_state["architect_generated_df"].empty:
+        options["Architect output"] = st.session_state["architect_generated_df"]
+    if st.session_state.get("bot_generated_df") is not None and not st.session_state["bot_generated_df"].empty:
+        options["AI Astra output"] = st.session_state["bot_generated_df"]
+    return options
+
+
+def render_lens_tab() -> None:
+    st.markdown('<div class="block-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Lens</div>', unsafe_allow_html=True)
+
+    options = _advanced_dataset_options()
+    if not options:
+        st.info("Upload or generate at least one dataset to use Lens.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    source = st.selectbox("Lens source", list(options.keys()), key="lens_source")
+    df = options[source]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Rows", f"{len(df):,}")
+    m2.metric("Columns", df.shape[1])
+    m3.metric("Null Cells", f"{int(df.isna().sum().sum()):,}")
+    m4.metric("Duplicates", f"{int(df.duplicated().sum()):,}")
+
+    schema_df = pd.DataFrame(
+        {
+            "column": df.columns,
+            "dtype": [str(t) for t in df.dtypes],
+            "non_null_count": df.notna().sum().values,
+            "null_count": df.isna().sum().values,
+            "unique_count": df.nunique(dropna=True).values,
+        }
+    )
+    if len(df) > 0:
+        schema_df["missing_rate_%"] = ((schema_df["null_count"] / len(df)) * 100).round(2)
+    else:
+        schema_df["missing_rate_%"] = 0.0
+    st.markdown('<div class="minor-title">Schema Snapshot</div>', unsafe_allow_html=True)
+    st.dataframe(schema_df, use_container_width=True, height=280)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown('<div class="minor-title">Missingness</div>', unsafe_allow_html=True)
+        miss = schema_df[["column", "missing_rate_%"]].sort_values("missing_rate_%", ascending=False).head(25)
+        fig_miss = px.bar(
+            miss,
+            x="missing_rate_%",
+            y="column",
+            orientation="h",
+            color="missing_rate_%",
+            color_continuous_scale="Oranges",
+        )
+        fig_miss.update_layout(height=360, margin=dict(t=20, l=20, r=20, b=20))
+        st.plotly_chart(fig_miss, use_container_width=True)
+    with c2:
+        st.markdown('<div class="minor-title">Correlations (numeric)</div>', unsafe_allow_html=True)
+        num = df.select_dtypes(include=[np.number])
+        if num.shape[1] >= 2:
+            corr = num.corr(numeric_only=True)
+            fig_corr = px.imshow(corr, text_auto=".2f", aspect="auto", color_continuous_scale="RdBu_r", zmin=-1, zmax=1)
+            fig_corr.update_layout(height=360, margin=dict(t=20, l=20, r=20, b=20))
+            st.plotly_chart(fig_corr, use_container_width=True)
+        else:
+            st.info("Need at least two numeric columns for correlation heatmap.")
+
+    st.markdown('<div class="minor-title">Column Statistics</div>', unsafe_allow_html=True)
+    stats_df = build_column_statistics(df)
+    st.dataframe(stats_df, use_container_width=True, height=320)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_architect_tab() -> None:
+    st.markdown('<div class="block-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Architect</div>', unsafe_allow_html=True)
+    st.caption("Mask sensitive fields, choose model strategy, and generate validated synthetic output.")
+
+    options = _advanced_dataset_options()
+    seed_only = {k: v for k, v in options.items() if k not in ("Architect output", "AI Astra output")}
+    if not seed_only:
+        st.info("Upload/join a dataset first to run Architect.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    seed_label = st.selectbox("Seed source", list(seed_only.keys()), key="architect_seed_source")
+    seed_df = seed_only[seed_label]
+
+    pii_df = detect_pii_columns(seed_df)
+    default_pii = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
+    st.markdown('<div class="minor-title">Privacy & Masking</div>', unsafe_allow_html=True)
+    p1, p2, p3 = st.columns(3)
+    selected_pii = st.multiselect(
+        "Columns to mask/drop",
+        options=list(seed_df.columns),
+        default=default_pii,
+        key="architect_pii_cols",
+    )
+    scrub_mode = p1.selectbox("PII mode", ["mask", "drop"], key="architect_scrub_mode")
+    k_anon = int(p2.number_input("k-anonymity", min_value=1, max_value=50, value=3, step=1, key="architect_k"))
+    noise_level = float(p3.slider("Numeric noise", 0.0, 0.5, 0.02, 0.01, key="architect_noise"))
+    private_df = apply_privacy_transform(seed_df, tuple(selected_pii), scrub_mode, k_anon, noise_level)
+
+    st.markdown('<div class="minor-title">The Foundry</div>', unsafe_allow_html=True)
+    g1, g2, g3 = st.columns(3)
+    model_choice = g1.selectbox(
+        "Method",
+        ["CTGAN (GAN)", "TVAE", "Diffusion-style bootstrap", "AI Astra"],
+        key="architect_model",
+    )
+    target_rows = int(
+        g2.number_input(
+            "Target rows",
+            min_value=max(10, len(private_df)),
+            max_value=1_000_000,
+            value=min(max(10, len(private_df) * 5), 100_000),
+            step=100,
+            key="architect_rows",
+        )
+    )
+    seed_rand = int(g3.number_input("Random seed", min_value=1, max_value=999_999, value=42, step=1, key="architect_seed"))
+    np.random.seed(seed_rand)
+
+    user_instruction = ""
+    if model_choice == "AI Astra":
+        user_instruction = st.text_area(
+            "Custom generation instruction (optional)",
+            value="",
+            height=85,
+            key="architect_instruction",
+        )
+
+    if st.button("Run Architect", type="primary", use_container_width=True, key="architect_run"):
+        try:
+            if model_choice == "CTGAN (GAN)":
+                out = generate_sdv_synthetic(private_df, target_rows, "CTGAN") if SDV_AVAILABLE else generate_bootstrap_synthetic(private_df, target_rows)
+            elif model_choice == "TVAE":
+                out = generate_sdv_synthetic(private_df, target_rows, "TVAE") if SDV_AVAILABLE else generate_bootstrap_synthetic(private_df, target_rows)
+            elif model_choice == "AI Astra":
+                out = generate_with_azure_llm(private_df, target_rows, custom_instruction=user_instruction)
+            else:
+                out = generate_bootstrap_synthetic(private_df, target_rows)
+
+            out = align_synthetic_to_seed_distribution(private_df, out)
+            st.session_state.architect_generated_df = out
+            st.session_state.architect_seed_label = seed_label
+            st.success(f"Architect generated {len(out):,} rows.")
+        except Exception as exc:
+            st.error(f"Architect generation failed: {exc}")
+
+    out = st.session_state.get("architect_generated_df")
+    if out is not None and not out.empty and st.session_state.get("architect_seed_label") == seed_label:
+        st.markdown('<div class="minor-title">Latest Generation</div>', unsafe_allow_html=True)
+        js_df, utility_df = compute_fidelity_metrics(private_df, out)
+        f1, f2 = st.columns(2)
+        with f1:
+            st.markdown("**JS Divergence (numeric)**")
+            st.dataframe(js_df, use_container_width=True, height=210)
+        with f2:
+            st.markdown("**Utility checks**")
+            st.dataframe(utility_df, use_container_width=True, height=210)
+        st.dataframe(out.head(30), use_container_width=True, height=240)
+        st.download_button(
+            "Download Architect output (CSV)",
+            out.to_csv(index=False).encode("utf-8"),
+            "architect_synthetic.csv",
+            "text/csv",
+            use_container_width=True,
+            key="architect_download_csv",
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_critic_tab() -> None:
+    st.markdown('<div class="block-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Critic</div>', unsafe_allow_html=True)
+    st.caption("Upload an external synthetic CSV and score it against your selected seed dataset.")
+
+    options = _advanced_dataset_options()
+    seed_only = {k: v for k, v in options.items() if k not in ("Architect output", "AI Astra output")}
+    if not seed_only:
+        st.info("Upload/join a seed dataset first for Critic.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    seed_label = st.selectbox("Seed source for critic", list(seed_only.keys()), key="critic_seed_source")
+    seed_df = seed_only[seed_label]
+    up = st.file_uploader("Upload synthetic CSV for Critic", type=["csv"], key="critic_upload_csv")
+
+    if st.button("Run Critic", type="primary", use_container_width=True, key="critic_run_btn_main"):
+        if up is None:
+            st.warning("Please upload a synthetic CSV first.")
+        else:
+            try:
+                synth_df = pd.read_csv(io.BytesIO(up.getvalue()), low_memory=False)
+                js_df, utility_df = compute_fidelity_metrics(seed_df, synth_df)
+                st.session_state.critic_synth_df = synth_df
+                st.session_state.critic_js_df = js_df
+                st.session_state.critic_utility_df = utility_df
+            except Exception as exc:
+                st.error(f"Critic failed: {exc}")
+
+    synth_df = st.session_state.get("critic_synth_df")
+    js_df = st.session_state.get("critic_js_df")
+    utility_df = st.session_state.get("critic_utility_df")
+    if synth_df is not None and js_df is not None and utility_df is not None:
+        avg_js = float(pd.to_numeric(js_df.get("js_divergence", pd.Series(dtype=float)), errors="coerce").dropna().mean() or 0.0)
+        corr_sim = utility_df.loc[utility_df["metric"] == "correlation_similarity", "value"]
+        corr_val = float(corr_sim.iloc[0]) if not corr_sim.empty and pd.notna(corr_sim.iloc[0]) else np.nan
+        if (avg_js <= 0.12) and (np.isnan(corr_val) or corr_val >= 0.70):
+            st.success(f"Critic verdict: PASS | avg JS={avg_js:.4f}" + (f" | corr similarity={corr_val:.3f}" if not np.isnan(corr_val) else ""))
+        else:
+            st.warning(f"Critic verdict: REVIEW | avg JS={avg_js:.4f}" + (f" | corr similarity={corr_val:.3f}" if not np.isnan(corr_val) else ""))
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Per-column divergence**")
+            st.dataframe(js_df, use_container_width=True, height=220)
+        with c2:
+            st.markdown("**Utility metrics**")
+            st.dataframe(utility_df, use_container_width=True, height=220)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_model_validation_sandbox_tab() -> None:
+    st.markdown('<div class="block-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Model Validation Sandbox</div>', unsafe_allow_html=True)
+    st.caption("Baseline check: train on real vs synthetic and compare performance on the same real holdout.")
+
+    options = _advanced_dataset_options()
+    seed_only = {k: v for k, v in options.items() if k not in ("Architect output", "AI Astra output")}
+    synth_only = {
+        k: v for k, v in options.items()
+        if k in ("Synthetic Generator output", "Architect output", "AI Astra output")
+    }
+    if not seed_only or not synth_only:
+        st.info("Need both a seed dataset and a synthetic dataset output to run sandbox validation.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    seed_label = st.selectbox("Seed dataset", list(seed_only.keys()), key="mv_seed_src")
+    synth_label = st.selectbox("Synthetic dataset", list(synth_only.keys()), key="mv_synth_src")
+    real_df = seed_only[seed_label].copy()
+    synth_df = synth_only[synth_label].copy()
+    common_cols = [c for c in real_df.columns if c in synth_df.columns]
+    if len(common_cols) < 2:
+        st.warning("Need at least two overlapping columns between seed and synthetic datasets.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+    real_df = real_df[common_cols]
+    synth_df = synth_df[common_cols]
+
+    target = st.selectbox("Target column", common_cols, key="mv_target")
+    feature_cols = [c for c in common_cols if c != target]
+    if not feature_cols:
+        st.warning("Need at least one feature column besides target.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+    test_size = st.slider("Real holdout fraction", 0.1, 0.4, 0.25, 0.05, key="mv_test_size")
+
+    if st.button("Run sandbox validation", type="primary", use_container_width=True, key="mv_run"):
+        try:
+            from sklearn.compose import ColumnTransformer
+            from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+            from sklearn.impute import SimpleImputer
+            from sklearn.metrics import accuracy_score, f1_score, mean_absolute_error, mean_squared_error, r2_score
+            from sklearn.model_selection import train_test_split
+            from sklearn.pipeline import Pipeline
+            from sklearn.preprocessing import OneHotEncoder
+        except Exception:
+            st.error("scikit-learn is required for Model Validation Sandbox. Please add `scikit-learn` to requirements.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+
+        merged_real = real_df.dropna(subset=[target]).copy()
+        merged_synth = synth_df.dropna(subset=[target]).copy()
+        if merged_real.empty or merged_synth.empty:
+            st.error("Target column has too many missing values.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+
+        is_regression = pd.api.types.is_numeric_dtype(merged_real[target]) and merged_real[target].nunique(dropna=True) > 15
+        X_real = merged_real[feature_cols]
+        y_real = merged_real[target]
+        X_synth = merged_synth[feature_cols]
+        y_synth = merged_synth[target]
+
+        cat_cols = [c for c in feature_cols if not pd.api.types.is_numeric_dtype(X_real[c])]
+        num_cols = [c for c in feature_cols if c not in cat_cols]
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ("num", Pipeline([("imputer", SimpleImputer(strategy="median"))]), num_cols),
+                ("cat", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("onehot", OneHotEncoder(handle_unknown="ignore"))]), cat_cols),
+            ],
+            remainder="drop",
+        )
+        model = HistGradientBoostingRegressor(random_state=42) if is_regression else HistGradientBoostingClassifier(random_state=42)
+        pipe = Pipeline([("prep", preprocessor), ("model", model)])
+
+        stratify = None if is_regression else y_real
+        X_train, X_test, y_train, y_test = train_test_split(X_real, y_real, test_size=test_size, random_state=42, stratify=stratify)
+
+        pipe.fit(X_train, y_train)
+        pred_train = pipe.predict(X_train)
+        pred_test = pipe.predict(X_test)
+
+        pipe_syn = Pipeline([("prep", preprocessor), ("model", model)])
+        pipe_syn.fit(X_synth, y_synth)
+        pred_syn_test = pipe_syn.predict(X_test)
+
+        if is_regression:
+            rows = [
+                {"Metric": "R2", "Train": r2_score(y_train, pred_train), "Test": r2_score(y_test, pred_test), "Synthetic": r2_score(y_test, pred_syn_test)},
+                {"Metric": "MAE", "Train": mean_absolute_error(y_train, pred_train), "Test": mean_absolute_error(y_test, pred_test), "Synthetic": mean_absolute_error(y_test, pred_syn_test)},
+                {"Metric": "RMSE", "Train": float(np.sqrt(mean_squared_error(y_train, pred_train))), "Test": float(np.sqrt(mean_squared_error(y_test, pred_test))), "Synthetic": float(np.sqrt(mean_squared_error(y_test, pred_syn_test)))},
+            ]
+        else:
+            avg_mode = "binary" if y_test.nunique() == 2 else "weighted"
+            rows = [
+                {"Metric": "Accuracy", "Train": accuracy_score(y_train, pred_train), "Test": accuracy_score(y_test, pred_test), "Synthetic": accuracy_score(y_test, pred_syn_test)},
+                {"Metric": "F1", "Train": f1_score(y_train, pred_train, average=avg_mode), "Test": f1_score(y_test, pred_test, average=avg_mode), "Synthetic": f1_score(y_test, pred_syn_test, average=avg_mode)},
+            ]
+
+        score_df = pd.DataFrame(rows)
+        st.dataframe(score_df, use_container_width=True, height=220)
+        fig = px.bar(
+            score_df.melt(id_vars="Metric", value_vars=["Train", "Test", "Synthetic"], var_name="Split", value_name="Value"),
+            x="Metric",
+            y="Value",
+            color="Split",
+            barmode="group",
+            color_discrete_sequence=px.colors.qualitative.Set2,
+            title="Train vs Test vs Synthetic",
+        )
+        fig.update_layout(height=360, margin=dict(t=40, l=20, r=20, b=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 # ---------------------------------------------------------------------------
 # App entry
 # ---------------------------------------------------------------------------
@@ -2172,9 +2529,29 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    default_tabs = ["Data Preview", "Join Builder", "Analytics", "Synthetic Data Generator", "AI Astra"]
+    default_tabs = [
+        "Data Preview",
+        "Join Builder",
+        "Analytics",
+        "Synthetic Data Generator",
+        "AI Astra",
+        "Lens",
+        "Architect",
+        "Critic",
+        "Model Validation Sandbox",
+    ]
     if st.session_state.get("jump_to_ai_astra"):
-        tab_labels = ["AI Astra", "Data Preview", "Join Builder", "Analytics", "Synthetic Data Generator"]
+        tab_labels = [
+            "AI Astra",
+            "Data Preview",
+            "Join Builder",
+            "Analytics",
+            "Synthetic Data Generator",
+            "Lens",
+            "Architect",
+            "Critic",
+            "Model Validation Sandbox",
+        ]
     else:
         tab_labels = default_tabs
 
@@ -2184,11 +2561,17 @@ def main() -> None:
         "Analytics": render_analytics_tab,
         "Synthetic Data Generator": render_synthetic_generator_tab,
         "AI Astra": render_data_bot_tab,
+        "Lens": render_lens_tab,
+        "Architect": render_architect_tab,
+        "Critic": render_critic_tab,
+        "Model Validation Sandbox": render_model_validation_sandbox_tab,
     }
     tabs = st.tabs(tab_labels)
     for tab_obj, label in zip(tabs, tab_labels):
         with tab_obj:
             tab_renderer[label]()
+    if st.session_state.get("jump_to_ai_astra"):
+        st.session_state.jump_to_ai_astra = False
 
     save_session_snapshot()
 
