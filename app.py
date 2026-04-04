@@ -1875,8 +1875,8 @@ def render_synthetic_generator_tab() -> None:
 
     st.markdown(
         """```text
-1) Seed Data Ingestion -> 2) Privacy/Anonymization -> 3) Generative Engine
-4) Fidelity Scoring -> 5) Self-Service Download
+1) Privacy & masking (seed lens) -> 2) Configuration
+3) Generate synthetic data + critic -> 4) Self-Service Download
 ```"""
     )
 
@@ -1909,15 +1909,16 @@ def render_synthetic_generator_tab() -> None:
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    st.markdown("### 1) Seed Data Ingestion")
+    st.markdown("### Privacy & masking - seed lens")
     c1, c2, c3 = st.columns(3)
     c1.metric("Seed rows", f"{len(seed_df):,}")
     c2.metric("Columns", seed_df.shape[1])
     c3.metric("Null cells", f"{int(seed_df.isna().sum().sum()):,}")
     pii_df = detect_pii_columns(seed_df)
-    st.dataframe(pii_df, use_container_width=True, height=210)
-
-    st.markdown("### 2) Privacy & Anonymization")
+    st.caption(
+        "Select PII columns to mask/drop. This mirrors Architect-style privacy controls "
+        "and runs generation on the masked seed lens."
+    )
     pii_candidates = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
     selected_pii = st.multiselect(
         "PII columns to scrub",
@@ -1938,7 +1939,7 @@ def render_synthetic_generator_tab() -> None:
     )
     st.caption(f"Post-privacy shape: {private_df.shape[0]:,} x {private_df.shape[1]}")
 
-    st.markdown("### 3) Generative Engine")
+    st.markdown("### Configuration")
     method_selection = st.radio(
         "Method selection",
         ["Architect decides (recommended)", "I will choose the method"],
@@ -2033,7 +2034,11 @@ def render_synthetic_generator_tab() -> None:
         )
     )
 
-    generate_btn = st.button("Generate Synthetic Data", type="primary", key="syn_generate_btn")
+    generate_btn = st.button(
+        "Generate Synthetic Data and Critic",
+        type="primary",
+        key="syn_generate_btn",
+    )
     synthetic_df: pd.DataFrame | None = st.session_state.get("synthetic_df")
 
     if generate_btn:
@@ -2099,17 +2104,30 @@ def render_synthetic_generator_tab() -> None:
             )
             if user_instruction.strip():
                 st.caption("Custom instruction captured for generation context.")
-            st.toast("Synthetic generation complete.")
+            st.toast("Synthetic generation and critic scoring complete.")
         except Exception as exc:
             st.error(f"Generation failed: {exc}")
 
     synthetic_df = st.session_state.get("synthetic_df")
     if synthetic_df is not None and not synthetic_df.empty:
-        st.markdown("### 4) Fidelity Scoring Engine")
+        st.markdown("### Critic Results")
         js_df = st.session_state.get("syn_last_js_df")
         utility_df = st.session_state.get("syn_last_utility_df")
         if not isinstance(js_df, pd.DataFrame) or not isinstance(utility_df, pd.DataFrame):
             js_df, utility_df = compute_fidelity_metrics(private_df, synthetic_df)
+        latest_profile = st.session_state.get("syn_last_profile", "standard")
+        latest_score = float(st.session_state.get("syn_last_score", _synthetic_fidelity_score(js_df, utility_df, latest_profile)))
+        profile_meta = SYN_CRITIC_PROFILES.get(latest_profile, SYN_CRITIC_PROFILES["standard"])
+        if latest_score >= float(profile_meta["pass_threshold"]):
+            st.success(
+                f"Critic verdict: PASS | score {latest_score:.2f}/5 "
+                f"(threshold {profile_meta['pass_threshold']}/5)"
+            )
+        else:
+            st.warning(
+                f"Critic verdict: REVIEW | score {latest_score:.2f}/5 "
+                f"(threshold {profile_meta['pass_threshold']}/5)"
+            )
         s1, s2 = st.columns(2)
         with s1:
             st.markdown("**JS Divergence (numeric columns)**")
@@ -2118,7 +2136,7 @@ def render_synthetic_generator_tab() -> None:
             st.markdown("**Correlation / Utility checks**")
             st.dataframe(utility_df, use_container_width=True, height=220)
 
-        st.markdown("### 5) Self-Service Download")
+        st.markdown("### Self-Service Download")
         preview_rows = int(
             st.number_input(
                 "Rows to preview (synthetic)",
