@@ -3327,6 +3327,10 @@ def render_model_validation_sandbox_tab() -> None:
         y_syn = synth_df[target]
         ms = y_syn.notna()
         X_syn, y_syn = X_syn.loc[ms], y_syn.loc[ms]
+        if X_syn.empty:
+            st.error("Synthetic dataset has no usable rows after dropping missing target values.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
         strat_s = _safe_stratify_target(y_syn, problem == "regression")
         X_str, _x, y_str, _y = train_test_split(
             X_syn,
@@ -3336,8 +3340,31 @@ def render_model_validation_sandbox_tab() -> None:
             stratify=strat_s,
         )
         if le is not None:
-            ok = y_str.astype(str).isin(set(le.classes_))
+            allowed_classes = set(le.classes_)
+            ok = y_str.astype(str).isin(allowed_classes)
             X_str, y_str = X_str.loc[ok], y_str.loc[ok]
+            if X_str.empty:
+                # Fallback: use all overlapping synthetic rows if split subset is empty.
+                ok_full = y_syn.astype(str).isin(allowed_classes)
+                X_str, y_str = X_syn.loc[ok_full], y_syn.loc[ok_full]
+            if X_str.empty:
+                st.error(
+                    "Synthetic-to-real evaluation failed: no overlapping target classes between "
+                    "selected synthetic and real seed datasets."
+                )
+                st.markdown("</div>", unsafe_allow_html=True)
+                return
+            if y_str.astype(str).nunique(dropna=True) < 2:
+                st.error(
+                    "Synthetic-to-real evaluation failed: synthetic training subset has only one "
+                    "target class after alignment with real classes."
+                )
+                st.markdown("</div>", unsafe_allow_html=True)
+                return
+        if len(X_str) < 2:
+            st.error("Synthetic-to-real evaluation failed: too few synthetic rows to train a model.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
         try:
             m_syn, _pipe_syn = ref_train_on_synthetic_eval_on_real(
                 X_str, y_str, X_te, y_te, problem, algo_choice, le
