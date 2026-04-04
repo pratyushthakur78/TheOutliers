@@ -2963,6 +2963,142 @@ def render_data_bot_tab() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _resolve_architect_route(gateway_mode: str, has_seed: bool, has_prompt: bool) -> str:
+    """Map Gateway input mode to the Architect route."""
+    mode = (gateway_mode or "").strip()
+    if mode not in ("Seed Data", "Natural Language", "Both"):
+        mode = "Both"
+
+    if mode == "Seed Data":
+        return "seed" if has_seed else "seed_missing"
+    if mode == "Natural Language":
+        return "nl" if has_prompt else "nl_missing"
+    if has_seed and has_prompt:
+        return "both"
+    if not has_seed and not has_prompt:
+        return "both_missing_all"
+    if not has_seed:
+        return "both_missing_seed"
+    return "both_missing_prompt"
+
+
+def render_seed_plus_prompt_tab() -> None:
+    st.markdown('<div class="block-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Architect (Seed + Natural Language)</div>', unsafe_allow_html=True)
+    st.caption("This flow uses both Gateway seed data and the Gateway prompt together.")
+
+    request_text = str(st.session_state.get("gateway_nl_prompt", "")).strip()
+    if not request_text:
+        st.warning("Add a Natural Language prompt in Gateway to use the combined flow.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    source_options = [f"Registry::{k}" for k in st.session_state.data_registry.keys()]
+    if st.session_state.joined_df is not None and not st.session_state.joined_df.empty:
+        source_options.insert(0, "Joined dataset")
+    if not source_options:
+        st.info("Upload seed data in Gateway (left pane) to use the combined flow.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    seed_source = st.selectbox("Seed source", source_options, key="both_seed_source")
+    if seed_source == "Joined dataset":
+        seed_df = st.session_state.joined_df.copy()
+    else:
+        table_name = seed_source.split("Registry::", 1)[1]
+        seed_df = st.session_state.data_registry.get(table_name)
+
+    if seed_df is None or seed_df.empty:
+        st.info("Choose a valid seed source.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    st.markdown(f"**Gateway prompt:** {request_text}")
+    pii_df = dp.detect_pii_columns(seed_df)
+    pii_candidates = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
+    with st.expander("Privacy & masking - seed lens", expanded=False):
+        selected_pii = st.multiselect(
+            "Columns to mask/drop",
+            options=list(seed_df.columns),
+            default=pii_candidates,
+            key="both_privacy_cols",
+        )
+        p1, p2, p3 = st.columns(3)
+        scrub_mode = p1.selectbox("PII mode", ["mask", "drop"], key="both_privacy_mode")
+        k_anon = int(p2.number_input("k-anonymity", min_value=1, max_value=50, value=3, step=1, key="both_privacy_k"))
+        noise_level = float(p3.slider("Numeric noise", 0.0, 0.5, 0.02, 0.01, key="both_privacy_noise"))
+        private_preview = se.apply_privacy_transform(seed_df, tuple(selected_pii), scrub_mode, k_anon, noise_level)
+        st.caption("Preview (masked seed lens)")
+        st.dataframe(private_preview.head(8), use_container_width=True, height=210)
+
+    selected_pii = st.session_state.get("both_privacy_cols", pii_candidates)
+    scrub_mode = st.session_state.get("both_privacy_mode", "mask")
+    k_anon = int(st.session_state.get("both_privacy_k", 3))
+    noise_level = float(st.session_state.get("both_privacy_noise", 0.02))
+    private_df = se.apply_privacy_transform(seed_df, tuple(selected_pii), scrub_mode, k_anon, noise_level)
+
+    c1, c2 = st.columns(2)
+    target_rows = int(
+        c1.number_input(
+            "Target synthetic rows",
+            min_value=max(10, len(private_df)),
+            max_value=1_000_000,
+            value=min(max(10, len(private_df) * 10), 100_000),
+            step=100,
+            key="both_target_rows",
+        )
+    )
+    profile_mode = c2.selectbox(
+        "Distribution profile",
+        ["Normalized (seed-aligned)", "Skewed (stress-test)"],
+        key="both_distribution_profile",
+    )
+    skew_strength = 0.35
+    if profile_mode == "Skewed (stress-test)":
+        skew_strength = float(
+            st.slider(
+                "Skew intensity",
+                min_value=0.10,
+                max_value=1.00,
+                value=0.35,
+                step=0.05,
+                key="both_skew_strength",
+            )
+        )
+
+    if st.button("Generate Synthetic Data (Seed + Prompt)", type="primary", use_container_width=True, key="both_generate_btn"):
+        try:
+            with st.spinner("Generating synthetic data from seed + prompt..."):
+                out = generate_with_azure_llm(private_df, target_rows, custom_instruction=request_text)
+                if profile_mode == "Normalized (seed-aligned)":
+                    out = se.align_synthetic_to_seed_distribution(private_df, out)
+                else:
+                    out = se.add_skew_for_stress_testing(out, skew_strength)
+                js_df, utility_df = se.compute_fidelity_metrics(private_df, out)
+                guardrails_report = se.validate_synthetic_dataset(private_df, out, [])
+            st.session_state.synthetic_df = out
+            st.session_state["syn_last_js_df"] = js_df
+            st.session_state["syn_last_utility_df"] = utility_df
+            st.session_state["syn_last_guardrails"] = guardrails_report
+            st.success(f"Generated {len(out):,} rows using both inputs.")
+        except Exception as exc:
+            st.error(f"Combined generation failed: {exc}")
+
+    synthetic_df = st.session_state.get("synthetic_df")
+    if synthetic_df is not None and not synthetic_df.empty:
+        st.markdown("### Combined Output Preview")
+        st.dataframe(synthetic_df.head(min(30, len(synthetic_df))), use_container_width=True, height=240)
+        st.download_button(
+            "Download synthetic dataset (CSV)",
+            data=synthetic_df.to_csv(index=False).encode("utf-8"),
+            file_name="synthetic_seed_plus_prompt.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="both_download_csv",
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def _advanced_dataset_options() -> dict[str, pd.DataFrame]:
     options: dict[str, pd.DataFrame] = {}
     if st.session_state.get("joined_df") is not None and not st.session_state["joined_df"].empty:
@@ -3633,30 +3769,27 @@ def render_architect_unified_tab() -> None:
     st.markdown('<div class="section-title">Architect</div>', unsafe_allow_html=True)
     gateway_mode = st.session_state.get("gateway_input_mode", "Both")
     has_gateway_seed = bool(st.session_state.get("data_registry"))
-
-    if gateway_mode == "Seed Data":
-        mode = "Seed Data"
-    elif gateway_mode == "Natural Language":
-        mode = "Natural Language"
-    else:
-        if (not has_gateway_seed) and st.session_state.get("architect_input_mode") == "Seed Data":
-            st.session_state.architect_input_mode = "Natural Language"
-        mode = st.radio(
-            "Type of input",
-            ["Seed Data", "Natural Language"],
-            horizontal=True,
-            key="architect_input_mode",
-        )
-
+    has_gateway_prompt = bool(str(st.session_state.get("gateway_nl_prompt", "")).strip())
+    route = _resolve_architect_route(gateway_mode, has_gateway_seed, has_gateway_prompt)
     st.caption(f"Gateway mode: **{gateway_mode}**")
     st.markdown("</div>", unsafe_allow_html=True)
-    if mode == "Seed Data":
-        if not has_gateway_seed and (st.session_state.get("joined_df") is None or st.session_state.get("joined_df").empty):
-            st.info("Gateway is set to Seed Data, but no seed dataset is uploaded yet.")
-            return
+
+    if route == "seed":
         render_synthetic_generator_tab()
-    else:
+    elif route == "nl":
         render_data_bot_tab()
+    elif route == "both":
+        render_seed_plus_prompt_tab()
+    elif route == "seed_missing":
+        st.info("Gateway is set to Seed Data, but no seed dataset is uploaded yet.")
+    elif route == "nl_missing":
+        st.info("Gateway is set to Natural Language, but prompt is empty in Gateway.")
+    elif route == "both_missing_seed":
+        st.info("Gateway is set to Both: upload seed data to run the combined Architect flow.")
+    elif route == "both_missing_prompt":
+        st.info("Gateway is set to Both: add a Natural Language prompt to run the combined flow.")
+    else:
+        st.info("Gateway is set to Both: upload seed data and add a prompt to run the combined flow.")
 
 
 def render_artifact_panel() -> None:
