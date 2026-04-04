@@ -1696,6 +1696,7 @@ def render_sidebar() -> None:
         """
         <div class="sidebar-hero">
             <div class="sidebar-kicker">Gateway</div>
+            <div class="sidebar-subtitle">Input</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -3501,6 +3502,66 @@ def render_architect_unified_tab() -> None:
         render_data_bot_tab()
 
 
+def render_artifact_panel() -> None:
+    st.markdown('<div class="block-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Artifact (Output)</div>', unsafe_allow_html=True)
+
+    final_df: pd.DataFrame | None = None
+    final_label = ""
+    if st.session_state.get("synthetic_df") is not None and not st.session_state["synthetic_df"].empty:
+        final_df = st.session_state["synthetic_df"]
+        final_label = "Architect seed-based output"
+    elif st.session_state.get("bot_generated_df") is not None and not st.session_state["bot_generated_df"].empty:
+        final_df = st.session_state["bot_generated_df"]
+        final_label = "Architect natural-language output"
+    elif st.session_state.get("architect_generated_df") is not None and not st.session_state["architect_generated_df"].empty:
+        final_df = st.session_state["architect_generated_df"]
+        final_label = "Architect legacy output"
+
+    if final_df is not None:
+        st.caption(f"Final dataset source: **{final_label}**")
+        st.download_button(
+            "Export final dataset (CSV)",
+            data=final_df.to_csv(index=False).encode("utf-8"),
+            file_name="artifact_final_dataset.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="artifact_final_csv",
+        )
+    else:
+        st.caption("Generate a dataset in Architect to enable final export.")
+
+    critic_pack = {
+        "guardrails": st.session_state.get("critic_guardrails_report"),
+        "js_metrics": (
+            st.session_state["critic_js_df"].to_dict(orient="records")
+            if isinstance(st.session_state.get("critic_js_df"), pd.DataFrame)
+            else None
+        ),
+        "utility_metrics": (
+            st.session_state["critic_utility_df"].to_dict(orient="records")
+            if isinstance(st.session_state.get("critic_utility_df"), pd.DataFrame)
+            else None
+        ),
+    }
+    mv_pack = st.session_state.get("mv_bundle")
+    final_report = {
+        "artifact": "Synthetic Data Foundry",
+        "final_dataset_source": final_label or None,
+        "critic_report": critic_pack,
+        "validation_sandbox_report": mv_pack,
+    }
+    st.download_button(
+        "Export final report (JSON)",
+        data=json.dumps(final_report, indent=2, default=str).encode("utf-8"),
+        file_name="artifact_final_report.json",
+        mime="application/json",
+        use_container_width=True,
+        key="artifact_final_report",
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 # ---------------------------------------------------------------------------
 # App entry
 # ---------------------------------------------------------------------------
@@ -3524,7 +3585,8 @@ def main() -> None:
         """
         <div style="padding: 0.25rem 0 0.9rem 0;">
             <div style="font-size: 2rem; font-weight: 800; letter-spacing: 0.2px; color: #1f2937;">
-                Gateway
+                Synthetic Data Foundry
+                <span style="color: #FFB347;">(Core Engine)</span>
             </div>
             <div style="margin-top: 0.25rem; color: #6b7280; font-size: 0.98rem;">
                 End-to-end: profile your seed, generate synthetic data with the Architect, auto-validate with the critic, and export.
@@ -3563,10 +3625,14 @@ def main() -> None:
         "Critic": render_critic_tab,
         "Model Validation Sandbox": render_model_validation_sandbox_tab,
     }
-    tabs = st.tabs(tab_labels)
-    for tab_obj, label in zip(tabs, tab_labels):
-        with tab_obj:
-            tab_renderer[label]()
+    core_col, artifact_col = st.columns([3.2, 1.2], gap="large")
+    with core_col:
+        tabs = st.tabs(tab_labels)
+        for tab_obj, label in zip(tabs, tab_labels):
+            with tab_obj:
+                tab_renderer[label]()
+    with artifact_col:
+        render_artifact_panel()
     if st.session_state.get("jump_to_lens"):
         st.session_state.jump_to_lens = False
     if st.session_state.get("jump_to_architect"):
