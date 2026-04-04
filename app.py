@@ -690,6 +690,63 @@ def compute_fidelity_metrics(real_df: pd.DataFrame, synth_df: pd.DataFrame) -> t
     return js_df, utility_df
 
 
+SYN_CRITIC_PROFILES: dict[str, dict[str, Any]] = {
+    "standard": {"title": "Standard", "pass_threshold": 3.5, "mean_js_fail": 0.12, "w_dist": 0.45, "w_corr": 0.35, "w_struct": 0.20},
+    "strict": {"title": "Strict (statistical twin)", "pass_threshold": 4.0, "mean_js_fail": 0.08, "w_dist": 0.45, "w_corr": 0.35, "w_struct": 0.20},
+    "exploratory": {"title": "Exploratory / demo", "pass_threshold": 2.8, "mean_js_fail": 0.18, "w_dist": 0.45, "w_corr": 0.35, "w_struct": 0.20},
+    "structure_first": {"title": "Structure-first", "pass_threshold": 3.2, "mean_js_fail": 0.15, "w_dist": 0.25, "w_corr": 0.45, "w_struct": 0.30},
+}
+
+
+def _has_azure_generation_context() -> bool:
+    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
+    api_key = (os.getenv("AZURE_OPENAI_API_KEY", "") or os.getenv("AZURE_API_KEY", "")).strip()
+    return bool(endpoint and api_key)
+
+
+def _auto_choose_generation_model(seed_df: pd.DataFrame) -> tuple[str, str]:
+    rows, cols = seed_df.shape
+    obj_cols = int(len(seed_df.select_dtypes(exclude=[np.number]).columns))
+    complexity = cols + (obj_cols * 1.5)
+    if SDV_AVAILABLE:
+        if rows < 200:
+            return "TVAE", "Small seed dataset: TVAE typically stabilizes faster."
+        return "CTGAN (GAN)", "Moderate/high complexity schema: CTGAN is preferred."
+    if _has_azure_generation_context() and complexity >= 70:
+        return "AI Astra", "High schema complexity and Azure context detected."
+    return "Diffusion-style bootstrap", "SDV unavailable: using robust bootstrap fallback."
+
+
+def _synthetic_fidelity_score(
+    js_df: pd.DataFrame,
+    utility_df: pd.DataFrame,
+    profile_id: str,
+) -> float:
+    prof = SYN_CRITIC_PROFILES.get(profile_id, SYN_CRITIC_PROFILES["standard"])
+    mean_js = float(pd.to_numeric(js_df.get("js_divergence", pd.Series(dtype=float)), errors="coerce").dropna().mean() or 0.0)
+    corr_series = utility_df.loc[utility_df["metric"] == "correlation_similarity", "value"]
+    null_diff_series = utility_df.loc[utility_df["metric"] == "avg_null_rate_diff", "value"]
+    uniq_real_series = utility_df.loc[utility_df["metric"] == "unique_ratio_real", "value"]
+    uniq_syn_series = utility_df.loc[utility_df["metric"] == "unique_ratio_synth", "value"]
+    corr_similarity = float(corr_series.iloc[0]) if not corr_series.empty and pd.notna(corr_series.iloc[0]) else 0.60
+    null_diff = float(null_diff_series.iloc[0]) if not null_diff_series.empty and pd.notna(null_diff_series.iloc[0]) else 0.30
+    uniq_gap = 0.0
+    if (not uniq_real_series.empty and pd.notna(uniq_real_series.iloc[0])) and (not uniq_syn_series.empty and pd.notna(uniq_syn_series.iloc[0])):
+        uniq_gap = abs(float(uniq_real_series.iloc[0]) - float(uniq_syn_series.iloc[0]))
+
+    dist_score = max(0.0, min(5.0, 5.0 * (1.0 - min(1.0, mean_js / max(float(prof["mean_js_fail"]), 1e-9)))))
+    corr_score = max(0.0, min(5.0, 5.0 * max(0.0, min(1.0, corr_similarity))))
+    struct_raw = 1.0 - min(1.0, (null_diff + uniq_gap) / 0.80)
+    struct_score = max(0.0, min(5.0, 5.0 * struct_raw))
+
+    return round(
+        float(prof["w_dist"]) * dist_score
+        + float(prof["w_corr"]) * corr_score
+        + float(prof["w_struct"]) * struct_score,
+        2,
+    )
+
+
 def export_dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
     """Export dataframe with key Lens sheets into an Excel workbook."""
     buf = io.BytesIO()
@@ -1882,17 +1939,13 @@ def render_synthetic_generator_tab() -> None:
     st.caption(f"Post-privacy shape: {private_df.shape[0]:,} x {private_df.shape[1]}")
 
     st.markdown("### 3) Generative Engine")
-    g1, g2 = st.columns(2)
-    model_choice = g1.selectbox(
-        "Generation model",
-        [
-            "CTGAN (GAN)",
-            "TVAE",
-            "Diffusion-style bootstrap",
-            "AI Astra",
-        ],
-        key="syn_model_choice",
+    method_selection = st.radio(
+        "Method selection",
+        ["Architect decides (recommended)", "I will choose the method"],
+        horizontal=True,
+        key="syn_method_selection",
     )
+    g1, g2 = st.columns(2)
     target_rows = int(
         g2.number_input(
             "Target synthetic rows",
@@ -1903,6 +1956,24 @@ def render_synthetic_generator_tab() -> None:
             key="syn_target_rows",
         )
     )
+    model_choice = "Diffusion-style bootstrap"
+    auto_reason = ""
+    if method_selection == "Architect decides (recommended)":
+        model_choice, auto_reason = _auto_choose_generation_model(private_df)
+        g1.markdown(f"**Generation model:** `{model_choice}`")
+        g1.caption(auto_reason)
+    else:
+        model_choice = g1.selectbox(
+            "Generation model",
+            [
+                "CTGAN (GAN)",
+                "TVAE",
+                "Diffusion-style bootstrap",
+                "AI Astra",
+            ],
+            key="syn_model_choice",
+        )
+
     user_instruction = ""
     profile_mode = "Normalized (seed-aligned)"
     skew_strength = 0.35
@@ -1933,38 +2004,99 @@ def render_synthetic_generator_tab() -> None:
                 )
             )
 
+    st.markdown("#### Critic controls")
+    r1, r2, r3 = st.columns(3)
+    critic_profile = r1.selectbox(
+        "Critic scoring profile",
+        options=list(SYN_CRITIC_PROFILES.keys()),
+        format_func=lambda k: SYN_CRITIC_PROFILES[k]["title"],
+        key="syn_critic_profile",
+    )
+    stop_score = float(
+        r2.number_input(
+            "Stop when fidelity score >= (1-5)",
+            min_value=1.0,
+            max_value=5.0,
+            value=float(SYN_CRITIC_PROFILES[critic_profile]["pass_threshold"]),
+            step=0.1,
+            key="syn_stop_score",
+        )
+    )
+    max_attempts = int(
+        r3.number_input(
+            "Max generation attempts",
+            min_value=1,
+            max_value=20,
+            value=3,
+            step=1,
+            key="syn_max_attempts",
+        )
+    )
+
     generate_btn = st.button("Generate Synthetic Data", type="primary", key="syn_generate_btn")
     synthetic_df: pd.DataFrame | None = st.session_state.get("synthetic_df")
 
     if generate_btn:
         try:
             with st.spinner("Generating synthetic data..."):
-                if model_choice == "CTGAN (GAN)":
-                    if SDV_AVAILABLE:
-                        synthetic_df = generate_sdv_synthetic(private_df, target_rows, "CTGAN")
+                best_df: pd.DataFrame | None = None
+                best_score = -1.0
+                best_js_df: pd.DataFrame | None = None
+                best_utility_df: pd.DataFrame | None = None
+                attempts_used = 0
+
+                for attempt in range(max_attempts):
+                    attempts_used = attempt + 1
+                    np.random.seed(42 + attempt)
+                    if model_choice == "CTGAN (GAN)":
+                        if SDV_AVAILABLE:
+                            candidate = generate_sdv_synthetic(private_df, target_rows, "CTGAN")
+                        else:
+                            candidate = generate_bootstrap_synthetic(private_df, target_rows)
+                    elif model_choice == "TVAE":
+                        if SDV_AVAILABLE:
+                            candidate = generate_sdv_synthetic(private_df, target_rows, "TVAE")
+                        else:
+                            candidate = generate_bootstrap_synthetic(private_df, target_rows)
+                    elif model_choice == "AI Astra":
+                        candidate = generate_with_azure_llm(
+                            private_df,
+                            target_rows,
+                            custom_instruction=user_instruction,
+                        )
                     else:
-                        st.info("SDV is not available; using Diffusion-style bootstrap fallback.")
-                        synthetic_df = generate_bootstrap_synthetic(private_df, target_rows)
-                elif model_choice == "TVAE":
-                    if SDV_AVAILABLE:
-                        synthetic_df = generate_sdv_synthetic(private_df, target_rows, "TVAE")
+                        candidate = generate_bootstrap_synthetic(private_df, target_rows)
+
+                    if profile_mode == "Normalized (seed-aligned)":
+                        candidate = align_synthetic_to_seed_distribution(private_df, candidate)
                     else:
-                        st.info("SDV is not available; using Diffusion-style bootstrap fallback.")
-                        synthetic_df = generate_bootstrap_synthetic(private_df, target_rows)
-                elif model_choice == "AI Astra":
-                    synthetic_df = generate_with_azure_llm(
-                        private_df,
-                        target_rows,
-                        custom_instruction=user_instruction,
-                    )
-                else:
-                    synthetic_df = generate_bootstrap_synthetic(private_df, target_rows)
-                if profile_mode == "Normalized (seed-aligned)":
-                    synthetic_df = align_synthetic_to_seed_distribution(private_df, synthetic_df)
-                else:
-                    synthetic_df = add_skew_for_stress_testing(synthetic_df, skew_strength)
+                        candidate = add_skew_for_stress_testing(candidate, skew_strength)
+
+                    js_try, utility_try = compute_fidelity_metrics(private_df, candidate)
+                    score_try = _synthetic_fidelity_score(js_try, utility_try, critic_profile)
+                    if score_try > best_score:
+                        best_score = score_try
+                        best_df = candidate
+                        best_js_df = js_try
+                        best_utility_df = utility_try
+                    if score_try >= stop_score:
+                        break
+
+                if best_df is None:
+                    raise RuntimeError("No synthetic output generated.")
+                synthetic_df = best_df
+                st.session_state["syn_last_score"] = best_score
+                st.session_state["syn_last_attempts"] = attempts_used
+                st.session_state["syn_last_profile"] = critic_profile
+                st.session_state["syn_last_js_df"] = best_js_df
+                st.session_state["syn_last_utility_df"] = best_utility_df
             st.session_state.synthetic_df = synthetic_df
             st.success(f"Synthetic dataset generated: {len(synthetic_df):,} rows")
+            st.caption(
+                f"Best critic score: {st.session_state.get('syn_last_score', 0):.2f}/5 "
+                f"| Attempts used: {st.session_state.get('syn_last_attempts', 1)} "
+                f"| Profile: {SYN_CRITIC_PROFILES[critic_profile]['title']}"
+            )
             if user_instruction.strip():
                 st.caption("Custom instruction captured for generation context.")
             st.toast("Synthetic generation complete.")
@@ -1974,7 +2106,10 @@ def render_synthetic_generator_tab() -> None:
     synthetic_df = st.session_state.get("synthetic_df")
     if synthetic_df is not None and not synthetic_df.empty:
         st.markdown("### 4) Fidelity Scoring Engine")
-        js_df, utility_df = compute_fidelity_metrics(private_df, synthetic_df)
+        js_df = st.session_state.get("syn_last_js_df")
+        utility_df = st.session_state.get("syn_last_utility_df")
+        if not isinstance(js_df, pd.DataFrame) or not isinstance(utility_df, pd.DataFrame):
+            js_df, utility_df = compute_fidelity_metrics(private_df, synthetic_df)
         s1, s2 = st.columns(2)
         with s1:
             st.markdown("**JS Divergence (numeric columns)**")
