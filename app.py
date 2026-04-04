@@ -690,6 +690,232 @@ def compute_fidelity_metrics(real_df: pd.DataFrame, synth_df: pd.DataFrame) -> t
     return js_df, utility_df
 
 
+def _dtype_family_compatible(seed_s: pd.Series, synth_s: pd.Series) -> bool:
+    if pd.api.types.is_numeric_dtype(seed_s) and pd.api.types.is_numeric_dtype(synth_s):
+        return True
+    if pd.api.types.is_bool_dtype(seed_s) and pd.api.types.is_bool_dtype(synth_s):
+        return True
+    if pd.api.types.is_datetime64_any_dtype(seed_s) and pd.api.types.is_datetime64_any_dtype(synth_s):
+        return True
+    if seed_s.dtype.kind in "OSV" and synth_s.dtype.kind in "OSV":
+        return True
+    return str(seed_s.dtype) == str(synth_s.dtype)
+
+
+def _to_num(df: pd.DataFrame, col: str) -> pd.Series:
+    return pd.to_numeric(df[col], errors="coerce")
+
+
+def _median_rel_error(resid: pd.Series, denom: pd.Series) -> float | None:
+    m = resid.notna() & denom.notna()
+    if m.sum() < 8:
+        return None
+    d = denom[m].abs().replace(0, np.nan)
+    rel = (resid[m].abs() / (d + 1e-12)).dropna()
+    if rel.empty:
+        return None
+    return float(rel.median())
+
+
+def _discover_additive_balance_patterns(
+    seed: pd.DataFrame,
+    cols: list[str],
+    *,
+    rel_threshold: float = 0.10,
+    max_cols: int = 14,
+) -> list[dict[str, Any]]:
+    cols = [c for c in cols if c in seed.columns][:max_cols]
+    patterns: list[dict[str, Any]] = []
+    seen: set[tuple[str, ...]] = set()
+
+    def try_pattern(a: str, b: str, c: str, tag: str) -> None:
+        if len({a, b, c}) < 3:
+            return
+        key = (tag, tuple(sorted([a, b])), c) if tag == "sum" else (tag, a, b, c)
+        if key in seen:
+            return
+        sa, sb, sc = _to_num(seed, a), _to_num(seed, b), _to_num(seed, c)
+        pred = sa + sb if tag == "sum" else sa - sb
+        m = pred.notna() & sc.notna()
+        if m.sum() < 12:
+            return
+        mer = _median_rel_error(pred - sc, sc)
+        if mer is None or mer > rel_threshold:
+            return
+        seen.add(key)
+        patterns.append(
+            {
+                "kind": tag,
+                "a": a,
+                "b": b,
+                "c": c,
+                "seed_median_rel_err": mer,
+                "label": f"{a} {'+' if tag == 'sum' else '-'} {b} ~= {c}",
+            }
+        )
+
+    for i in range(len(cols)):
+        for j in range(i + 1, len(cols)):
+            a, b = cols[i], cols[j]
+            for k in range(len(cols)):
+                if k in (i, j):
+                    continue
+                c = cols[k]
+                try_pattern(a, b, c, "sum")
+                try_pattern(a, b, c, "diff")
+    return patterns[:20]
+
+
+def _validate_patterns_on_synth(
+    synth: pd.DataFrame,
+    patterns: list[dict[str, Any]],
+    *,
+    degrade_factor: float = 4.0,
+    slack: float = 0.07,
+) -> tuple[list[str], list[str]]:
+    issues: list[str] = []
+    ok: list[str] = []
+    for p in patterns:
+        a, b, c = p["a"], p["b"], p["c"]
+        if not all(x in synth.columns for x in (a, b, c)):
+            issues.append(f"{p.get('label', '?')}: missing columns")
+            continue
+        sa, sb, sc = _to_num(synth, a), _to_num(synth, b), _to_num(synth, c)
+        pred = sa + sb if p["kind"] == "sum" else sa - sb
+        mer = _median_rel_error(pred - sc, sc)
+        seed_m = p["seed_median_rel_err"]
+        if mer is None:
+            issues.append(f"{p.get('label')}: could not score synthetic")
+            continue
+        if mer > seed_m * degrade_factor + slack:
+            issues.append(f"{p.get('label')}: seed {seed_m:.2%} -> synth {mer:.2%} (weakened)")
+        else:
+            ok.append(f"{p.get('label')}: synth {mer:.2%} (seed {seed_m:.2%})")
+    return issues, ok
+
+
+def validate_synthetic_dataset(seed: pd.DataFrame, synth: pd.DataFrame, pk_cols: list[str]) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    common = [c for c in seed.columns if c in synth.columns]
+    primary = pk_cols[0] if pk_cols else None
+
+    if primary and primary in synth.columns:
+        dup = int(synth[primary].duplicated().sum())
+        checks.append(
+            {
+                "id": "pk_unique",
+                "name": "Primary key uniqueness",
+                "pass": dup == 0,
+                "detail": f"Duplicate key rows: {dup:,}",
+            }
+        )
+
+    dtype_issues = [
+        f"{c}: {seed[c].dtype} vs {synth[c].dtype}"
+        for c in common
+        if not _dtype_family_compatible(seed[c], synth[c])
+    ]
+    checks.append(
+        {
+            "id": "dtype_match",
+            "name": "Datatype consistency",
+            "pass": len(dtype_issues) == 0,
+            "detail": "; ".join(dtype_issues[:10]) if dtype_issues else f"{len(common)} overlapping column(s) keep compatible dtype families.",
+        }
+    )
+
+    cat_issues: list[str] = []
+    for c in common:
+        sc, sy = seed[c], synth[c]
+        if pd.api.types.is_numeric_dtype(sc) or pd.api.types.is_datetime64_any_dtype(sc):
+            continue
+        nu = int(sc.nunique(dropna=True))
+        if nu > 100 or nu < 1:
+            continue
+        novel = set(sy.dropna().astype(str).unique()) - set(sc.dropna().astype(str).unique())
+        if novel:
+            sample = next(iter(novel))
+            cat_issues.append(f"{c}: {len(novel)} novel value(s), e.g. {sample[:48]!r}")
+    checks.append(
+        {
+            "id": "categorical_vocab",
+            "name": "Categorical/text levels",
+            "pass": len(cat_issues) == 0,
+            "detail": "; ".join(cat_issues[:6]) if cat_issues else "Low-cardinality text columns stay within seed vocabulary.",
+        }
+    )
+
+    num_common = [
+        c for c in common
+        if pd.api.types.is_numeric_dtype(seed[c]) and pd.api.types.is_numeric_dtype(synth[c]) and c != primary
+    ]
+    patterns = _discover_additive_balance_patterns(seed, num_common)
+    add_issues, add_ok = _validate_patterns_on_synth(synth, patterns)
+    checks.append(
+        {
+            "id": "patterns_additive",
+            "name": "Inferred additive/difference patterns",
+            "pass": len(add_issues) == 0,
+            "detail": "; ".join(add_issues[:8]) if add_issues else (" | ".join(add_ok[:8]) if add_ok else "No stable additive patterns inferred from seed."),
+        }
+    )
+
+    definitive = [c for c in checks if c.get("pass") is False]
+    return {
+        "checks": checks,
+        "overall_pass": len(definitive) == 0,
+        "summary": f"{len(definitive)} failed" if definitive else "All automated checks passed",
+        "patterns_discovered": patterns,
+    }
+
+
+def render_guardrails_table(report: dict[str, Any]) -> None:
+    rows = report.get("checks") or []
+    if not rows:
+        st.caption("No Guardrails checks available.")
+        return
+    tbl = pd.DataFrame(
+        [
+            {
+                "Check": r.get("name", ""),
+                "Result": "Pass" if r.get("pass") is True else ("Fail" if r.get("pass") is False else "N/A"),
+                "Detail": (r.get("detail") or "")[:900],
+            }
+            for r in rows
+        ]
+    )
+    st.dataframe(tbl, use_container_width=True, hide_index=True)
+    overall = report.get("overall_pass")
+    summary = report.get("summary", "")
+    if overall is True:
+        st.success(f"Guardrails: {summary}")
+    elif overall is False:
+        st.warning(f"Guardrails: {summary}")
+    else:
+        st.info(summary or "Guardrails partial.")
+
+
+def render_seed_synth_corr(seed_df: pd.DataFrame, synth_df: pd.DataFrame, key_prefix: str) -> None:
+    num_seed = seed_df.select_dtypes(include=[np.number])
+    num_syn = synth_df.select_dtypes(include=[np.number])
+    common = [c for c in num_seed.columns if c in num_syn.columns]
+    if len(common) < 2:
+        st.caption("Need at least two overlapping numeric columns for correlation matrices.")
+        return
+    cr_seed = num_seed[common].corr(numeric_only=True).round(4)
+    cr_syn = num_syn[common].corr(numeric_only=True).round(4)
+    st.markdown("**Numeric correlations - seed vs synthetic**")
+    c1, c2 = st.columns(2)
+    with c1:
+        fig_seed = px.imshow(cr_seed, text_auto=".2f", aspect="auto", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, title="Seed correlations")
+        fig_seed.update_layout(height=max(360, 28 * len(common)))
+        st.plotly_chart(fig_seed, use_container_width=True, key=f"{key_prefix}_seed")
+    with c2:
+        fig_syn = px.imshow(cr_syn, text_auto=".2f", aspect="auto", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, title="Synthetic correlations")
+        fig_syn.update_layout(height=max(360, 28 * len(common)))
+        st.plotly_chart(fig_syn, use_container_width=True, key=f"{key_prefix}_syn")
+
+
 SYN_CRITIC_PROFILES: dict[str, dict[str, Any]] = {
     "standard": {"title": "Standard", "pass_threshold": 3.5, "mean_js_fail": 0.12, "w_dist": 0.45, "w_corr": 0.35, "w_struct": 0.20},
     "strict": {"title": "Strict (statistical twin)", "pass_threshold": 4.0, "mean_js_fail": 0.08, "w_dist": 0.45, "w_corr": 0.35, "w_struct": 0.20},
@@ -1306,6 +1532,8 @@ def init_state() -> None:
         st.session_state.critic_js_df: pd.DataFrame | None = None
     if "critic_utility_df" not in st.session_state:
         st.session_state.critic_utility_df: pd.DataFrame | None = None
+    if "syn_last_guardrails" not in st.session_state:
+        st.session_state.syn_last_guardrails: dict[str, Any] | None = None
 
 
 def restore_session_snapshot(max_age_seconds: int) -> bool:
@@ -2166,11 +2394,13 @@ def render_synthetic_generator_tab() -> None:
                 if best_df is None:
                     raise RuntimeError("No synthetic output generated.")
                 synthetic_df = best_df
+                guardrails_report = validate_synthetic_dataset(private_df, synthetic_df, [])
                 st.session_state["syn_last_score"] = best_score
                 st.session_state["syn_last_attempts"] = attempts_used
                 st.session_state["syn_last_profile"] = critic_profile
                 st.session_state["syn_last_js_df"] = best_js_df
                 st.session_state["syn_last_utility_df"] = best_utility_df
+                st.session_state["syn_last_guardrails"] = guardrails_report
             st.session_state.synthetic_df = synthetic_df
             st.success(f"Synthetic dataset generated: {len(synthetic_df):,} rows")
             st.caption(
@@ -2189,6 +2419,7 @@ def render_synthetic_generator_tab() -> None:
         st.markdown("### Critic Results")
         js_df = st.session_state.get("syn_last_js_df")
         utility_df = st.session_state.get("syn_last_utility_df")
+        guardrails_report = st.session_state.get("syn_last_guardrails") or {}
         if not isinstance(js_df, pd.DataFrame) or not isinstance(utility_df, pd.DataFrame):
             js_df, utility_df = compute_fidelity_metrics(private_df, synthetic_df)
         latest_profile = st.session_state.get("syn_last_profile", "standard")
@@ -2204,6 +2435,9 @@ def render_synthetic_generator_tab() -> None:
                 f"Critic verdict: REVIEW | score {latest_score:.2f}/5 "
                 f"(threshold {profile_meta['pass_threshold']}/5)"
             )
+        st.markdown("**Guardrails**")
+        render_guardrails_table(guardrails_report)
+        render_seed_synth_corr(private_df, synthetic_df, "syn_gen_corr")
         s1, s2 = st.columns(2)
         with s1:
             st.markdown("**JS Divergence (numeric columns)**")
@@ -2211,6 +2445,60 @@ def render_synthetic_generator_tab() -> None:
         with s2:
             st.markdown("**Correlation / Utility checks**")
             st.dataframe(utility_df, use_container_width=True, height=220)
+
+        c1, c2 = st.columns((1.1, 0.9))
+        with c1:
+            st.markdown("**Schema (synthetic)**")
+            schema_df = pd.DataFrame(
+                {
+                    "column": synthetic_df.columns,
+                    "dtype": [str(t) for t in synthetic_df.dtypes],
+                    "non_null_count": synthetic_df.notna().sum().values,
+                    "null_count": synthetic_df.isna().sum().values,
+                    "unique_count": synthetic_df.nunique(dropna=True).values,
+                }
+            )
+            if len(synthetic_df) > 0:
+                schema_df["missing_rate_%"] = (
+                    (schema_df["null_count"] / len(synthetic_df)) * 100
+                ).round(2)
+            else:
+                schema_df["missing_rate_%"] = 0.0
+            st.dataframe(schema_df, use_container_width=True, height=320)
+        with c2:
+            dtype_counts = synthetic_df.dtypes.astype(str).value_counts()
+            fig_dtype = px.pie(
+                values=dtype_counts.values,
+                names=dtype_counts.index,
+                title="Types",
+                hole=0.4,
+                color_discrete_sequence=px.colors.qualitative.Set2,
+            )
+            fig_dtype.update_layout(height=320, margin=dict(t=40, l=20, r=20, b=20))
+            st.plotly_chart(fig_dtype, use_container_width=True, key="syn_critic_dtype")
+
+        st.markdown("**Column statistics (synthetic)**")
+        stats_df = build_column_statistics(synthetic_df)
+        st.dataframe(stats_df, use_container_width=True, height=340)
+
+        st.markdown("**Preview**")
+        preview_n = int(
+            st.number_input(
+                "Rows to preview (critic)",
+                min_value=1,
+                max_value=max(1, len(synthetic_df)),
+                value=min(25, len(synthetic_df)),
+                step=1,
+                key="syn_critic_preview_rows",
+            )
+        )
+        p1, p2 = st.columns(2)
+        with p1:
+            st.caption("Head")
+            st.dataframe(synthetic_df.head(preview_n), use_container_width=True, height=230)
+        with p2:
+            st.caption("Tail")
+            st.dataframe(synthetic_df.tail(min(preview_n, len(synthetic_df))), use_container_width=True, height=230)
 
         st.markdown("### Self-Service Download")
         preview_rows = int(
@@ -2231,6 +2519,24 @@ def render_synthetic_generator_tab() -> None:
             file_name="synthetic_dataset.csv",
             mime="text/csv",
             use_container_width=True,
+        )
+        st.download_button(
+            "Download critic report (JSON)",
+            data=json.dumps(
+                {
+                    "score": latest_score,
+                    "profile": latest_profile,
+                    "js": js_df.to_dict(orient="records"),
+                    "utility": utility_df.to_dict(orient="records"),
+                    "guardrails": guardrails_report,
+                },
+                indent=2,
+                default=str,
+            ).encode("utf-8"),
+            file_name="synthetic_critic_report.json",
+            mime="application/json",
+            use_container_width=True,
+            key="syn_critic_json_dl",
         )
 
     st.markdown("</div>", unsafe_allow_html=True)
