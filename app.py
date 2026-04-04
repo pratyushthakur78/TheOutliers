@@ -1721,7 +1721,7 @@ def render_sidebar() -> None:
 
     if st.sidebar.button("✨ Generate via AI Astra", key="sidebar_jump_ai_astra", type="primary", use_container_width=True):
         st.session_state.jump_to_architect = True
-        st.session_state.architect_input_mode = "AI Astra"
+        st.session_state.architect_input_mode = "Natural Language"
         st.rerun()
 
     if uploads:
@@ -3490,16 +3490,14 @@ def render_architect_unified_tab() -> None:
     st.markdown('<div class="section-title">Architect</div>', unsafe_allow_html=True)
     mode = st.radio(
         "Type of input",
-        ["Seed Data", "Natural Language", "AI Astra"],
+        ["Seed Data", "Natural Language"],
         horizontal=True,
         key="architect_input_mode",
     )
     st.markdown("</div>", unsafe_allow_html=True)
     if mode == "Seed Data":
         render_synthetic_generator_tab()
-    elif mode == "Natural Language":
-        render_data_bot_tab()
-    else:  # AI Astra
+    else:
         render_data_bot_tab()
 
 
