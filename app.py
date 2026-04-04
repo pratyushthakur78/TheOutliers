@@ -3212,12 +3212,10 @@ def render_model_validation_sandbox_tab() -> None:
 
     options = _advanced_dataset_options()
     seed_only = {k: v for k, v in options.items() if k not in ("Architect output", "AI Astra output")}
-    synth_only = {
-        k: v for k, v in options.items()
-        if k in ("Synthetic Generator output", "Architect output", "AI Astra output")
-    }
+    # Keep all left-pane uploaded datasets visible in synthetic selector as requested.
+    synth_only = dict(options)
     if not seed_only or not synth_only:
-        st.info("Need both a seed dataset and a synthetic dataset output to run sandbox validation.")
+        st.info("Need both a seed dataset and a dataset to evaluate in sandbox validation.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
