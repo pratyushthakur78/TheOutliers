@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import numpy as np
@@ -37,13 +38,20 @@ def apply_privacy_transform(
     noise_level: float,
 ) -> pd.DataFrame:
     out = df.copy()
+    def _deterministic_token(v: Any) -> str:
+        txt = str(v)
+        digest = hashlib.sha256(txt.encode("utf-8")).hexdigest()[:16]
+        return f"TOKEN_{digest}"
+
     for col in pii_columns:
         if col not in out.columns:
             continue
-        if scrub_mode == "mask":
-            out[col] = out[col].astype(str).where(out[col].isna(), "REDACTED")
-        elif scrub_mode == "drop":
+        if scrub_mode in ("Drop", "drop"):
             out = out.drop(columns=[col])
+        elif scrub_mode in ("Hash / token (deterministic)", "hash"):
+            out[col] = out[col].apply(lambda v: np.nan if pd.isna(v) else _deterministic_token(v))
+        elif scrub_mode in ("Redact ([REDACTED])", "mask"):
+            out[col] = out[col].apply(lambda v: np.nan if pd.isna(v) else "[REDACTED]")
 
     cat_cols = [c for c in out.columns if not pd.api.types.is_numeric_dtype(out[c])]
     if k_anonymity > 1:

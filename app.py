@@ -1692,6 +1692,8 @@ def init_state() -> None:
         st.session_state.mv_bundle: dict[str, Any] | None = None
     if "upload_widget_nonce" not in st.session_state:
         st.session_state.upload_widget_nonce = 0
+    if "lens_sensitive_cols_by_source" not in st.session_state:
+        st.session_state.lens_sensitive_cols_by_source: dict[str, list[str]] = {}
 
 
 def restore_session_snapshot(max_age_seconds: int) -> bool:
@@ -1765,6 +1767,7 @@ def clear_loaded_app_state() -> None:
     st.session_state.critic_utility_df = None
     st.session_state.syn_last_guardrails = None
     st.session_state.mv_bundle = None
+    st.session_state.lens_sensitive_cols_by_source = {}
     st.session_state.jump_to_lens = False
     st.session_state.jump_to_ai_astra = False
     st.session_state.jump_to_architect = False
@@ -2381,17 +2384,34 @@ def render_synthetic_generator_tab() -> None:
         return
 
     st.markdown("### Privacy & masking - seed lens")
-    pii_df = dp.detect_pii_columns(seed_df)
-    pii_candidates = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
+    pii_df, pii_candidates = _default_sensitive_columns(seed_source, seed_df)
     with st.expander("Privacy & masking - seed lens", expanded=False):
+        st.caption(
+            "Select one or more primary-key columns (all are dropped for synthesis; the first is reassigned after). "
+            "Choose columns to mask; options match the sensitive columns list below."
+        )
+        selected_pk = st.multiselect(
+            "Primary-key columns",
+            options=list(seed_df.columns),
+            default=[],
+            key="syn_primary_keys",
+        )
         selected_pii = st.multiselect(
             "Columns to mask/drop",
-            options=list(seed_df.columns),
+            options=pii_candidates,
             default=pii_candidates,
             key="syn_privacy_cols",
         )
+        if pii_candidates:
+            st.caption("Sensitive columns from Lens/PII scan: " + ", ".join(pii_candidates))
+        else:
+            st.caption("No sensitive columns detected for this dataset.")
         p1, p2, p3 = st.columns(3)
-        scrub_mode = p1.selectbox("PII mode", ["mask", "drop"], key="syn_privacy_mode")
+        scrub_mode = p1.selectbox(
+            "Masking method",
+            ["Drop", "Hash / token (deterministic)", "Redact ([REDACTED])"],
+            key="syn_privacy_mode",
+        )
         k_anon = int(
             p2.number_input(
                 "k-anonymity",
@@ -2421,8 +2441,9 @@ def render_synthetic_generator_tab() -> None:
         )
         st.caption("Preview (masked seed lens)")
         st.dataframe(private_preview.head(8), use_container_width=True, height=210)
+    selected_pk = [c for c in st.session_state.get("syn_primary_keys", []) if c in seed_df.columns]
     selected_pii = st.session_state.get("syn_privacy_cols", pii_candidates)
-    scrub_mode = st.session_state.get("syn_privacy_mode", "mask")
+    scrub_mode = st.session_state.get("syn_privacy_mode", "Redact ([REDACTED])")
     k_anon = int(st.session_state.get("syn_privacy_k", 3))
     noise_level = float(st.session_state.get("syn_privacy_noise", 0.02))
     private_df = se.apply_privacy_transform(
@@ -2432,6 +2453,12 @@ def render_synthetic_generator_tab() -> None:
         k_anon,
         noise_level,
     )
+    if selected_pk:
+        private_df = private_df.drop(columns=[c for c in selected_pk if c in private_df.columns], errors="ignore")
+    if private_df.shape[1] == 0:
+        st.error("All columns are removed by privacy settings. Unselect some PK/masked columns.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
     st.caption(f"Post-privacy shape: {private_df.shape[0]:,} x {private_df.shape[1]}")
 
     st.markdown("### Configuration")
@@ -2635,6 +2662,7 @@ def render_synthetic_generator_tab() -> None:
                         candidate = se.align_synthetic_to_seed_distribution(private_df, candidate)
                     else:
                         candidate = se.add_skew_for_stress_testing(candidate, skew_strength)
+                    candidate = _reassign_primary_key_after_synthesis(seed_df, candidate, selected_pk)
 
                     js_try, utility_try = se.compute_fidelity_metrics(private_df, candidate)
                     score_try = _synthetic_fidelity_score(js_try, utility_try, critic_profile)
@@ -2995,6 +3023,30 @@ def _display_dataset_label(label: str) -> str:
     return str(label)
 
 
+def _default_sensitive_columns(source_label: str, seed_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    pii_df = dp.detect_pii_columns(seed_df)
+    detected = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
+    mapped = st.session_state.get("lens_sensitive_cols_by_source", {}).get(source_label, [])
+    preferred = [c for c in mapped if c in seed_df.columns] if mapped else detected
+    return pii_df, preferred
+
+
+def _reassign_primary_key_after_synthesis(seed_df: pd.DataFrame, synth_df: pd.DataFrame, primary_keys: list[str]) -> pd.DataFrame:
+    pk_cols = [c for c in primary_keys if c in seed_df.columns]
+    if not pk_cols:
+        return synth_df
+    pk = pk_cols[0]
+    out = synth_df.copy()
+    if pk in out.columns:
+        out = out.drop(columns=[pk])
+    if pd.api.types.is_numeric_dtype(seed_df[pk]):
+        start = int(pd.to_numeric(seed_df[pk], errors="coerce").dropna().min() or 1)
+        out.insert(0, pk, np.arange(start, start + len(out), dtype=np.int64))
+    else:
+        out.insert(0, pk, [f"PK_{i+1}" for i in range(len(out))])
+    return out
+
+
 def render_seed_plus_prompt_tab() -> None:
     st.markdown('<div class="block-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Architect (Seed + Natural Language)</div>', unsafe_allow_html=True)
@@ -3032,28 +3084,52 @@ def render_seed_plus_prompt_tab() -> None:
         return
 
     st.markdown(f"**Gateway prompt:** {request_text}")
-    pii_df = dp.detect_pii_columns(seed_df)
-    pii_candidates = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
+    pii_df, pii_candidates = _default_sensitive_columns(seed_source, seed_df)
     with st.expander("Privacy & masking - seed lens", expanded=False):
+        st.caption(
+            "Select one or more primary-key columns (all are dropped for synthesis; the first is reassigned after). "
+            "Choose columns to mask; options match the sensitive columns list below."
+        )
+        selected_pk = st.multiselect(
+            "Primary-key columns",
+            options=list(seed_df.columns),
+            default=[],
+            key="both_primary_keys",
+        )
         selected_pii = st.multiselect(
             "Columns to mask/drop",
-            options=list(seed_df.columns),
+            options=pii_candidates,
             default=pii_candidates,
             key="both_privacy_cols",
         )
+        if pii_candidates:
+            st.caption("Sensitive columns from Lens/PII scan: " + ", ".join(pii_candidates))
+        else:
+            st.caption("No sensitive columns detected for this dataset.")
         p1, p2, p3 = st.columns(3)
-        scrub_mode = p1.selectbox("PII mode", ["mask", "drop"], key="both_privacy_mode")
+        scrub_mode = p1.selectbox(
+            "Masking method",
+            ["Drop", "Hash / token (deterministic)", "Redact ([REDACTED])"],
+            key="both_privacy_mode",
+        )
         k_anon = int(p2.number_input("k-anonymity", min_value=1, max_value=50, value=3, step=1, key="both_privacy_k"))
         noise_level = float(p3.slider("Numeric noise", 0.0, 0.5, 0.02, 0.01, key="both_privacy_noise"))
         private_preview = se.apply_privacy_transform(seed_df, tuple(selected_pii), scrub_mode, k_anon, noise_level)
         st.caption("Preview (masked seed lens)")
         st.dataframe(private_preview.head(8), use_container_width=True, height=210)
 
+    selected_pk = [c for c in st.session_state.get("both_primary_keys", []) if c in seed_df.columns]
     selected_pii = st.session_state.get("both_privacy_cols", pii_candidates)
-    scrub_mode = st.session_state.get("both_privacy_mode", "mask")
+    scrub_mode = st.session_state.get("both_privacy_mode", "Redact ([REDACTED])")
     k_anon = int(st.session_state.get("both_privacy_k", 3))
     noise_level = float(st.session_state.get("both_privacy_noise", 0.02))
     private_df = se.apply_privacy_transform(seed_df, tuple(selected_pii), scrub_mode, k_anon, noise_level)
+    if selected_pk:
+        private_df = private_df.drop(columns=[c for c in selected_pk if c in private_df.columns], errors="ignore")
+    if private_df.shape[1] == 0:
+        st.error("All columns are removed by privacy settings. Unselect some PK/masked columns.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
 
     c1, c2, c3 = st.columns(3)
     target_rows = int(
@@ -3104,6 +3180,7 @@ def render_seed_plus_prompt_tab() -> None:
                     out = se.align_synthetic_to_seed_distribution(private_df, out)
                 else:
                     out = se.add_skew_for_stress_testing(out, skew_strength)
+                out = _reassign_primary_key_after_synthesis(seed_df, out, selected_pk)
                 js_df, utility_df = se.compute_fidelity_metrics(private_df, out)
                 guardrails_report = se.validate_synthetic_dataset(private_df, out, [])
             st.session_state.synthetic_df = out
@@ -3279,13 +3356,19 @@ def render_lens_tab() -> None:
     st.markdown("**Potentially sensitive columns**")
     pii_df = dp.detect_pii_columns(df)
     pii_cols = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
+    pii_map = st.session_state.get("lens_sensitive_cols_by_source", {})
+    pii_map[source] = pii_cols
+    st.session_state.lens_sensitive_cols_by_source = pii_map
     if not pii_cols:
         st.caption(
             "No columns matched address, name, phone, PAN, Aadhaar, or identifier checks "
             "(column names and sample values)."
         )
     else:
-        st.dataframe(pd.DataFrame({"Column": pii_cols}), use_container_width=True, hide_index=True)
+        view_df = pii_df.loc[pii_df["pii_detected"] == True, ["column", "reason"]].rename(
+            columns={"column": "Column", "reason": "Signal"}
+        )
+        st.dataframe(view_df, use_container_width=True, hide_index=True)
 
     st.markdown("**Preview**")
     npeek = st.slider("Rows (head / tail)", 5, 80, 15, key=f"lens_npeek_{lens_key}")
