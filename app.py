@@ -2871,7 +2871,7 @@ def render_model_validation_sandbox_tab() -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     st.set_page_config(
-        page_title=f"{BRAND_NAME} — Multi-File Joiner",
+        page_title="Synthetuc Data Foundry",
         page_icon="✦",
         layout="wide",
         initial_sidebar_state="expanded",
@@ -2889,7 +2889,7 @@ def main() -> None:
         """
         <div style="padding: 0.25rem 0 0.9rem 0;">
             <div style="font-size: 2rem; font-weight: 800; letter-spacing: 0.2px; color: #1f2937;">
-                The Synthetic Data Generator
+                Synthetuc Data Foundry
                 <span style="color: #FFB347;">- by The Outliers</span>
             </div>
             <div style="margin-top: 0.25rem; color: #6b7280; font-size: 0.98rem;">
