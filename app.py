@@ -44,6 +44,7 @@ HACKATHON_DIR = os.getenv("HACKATHON_DIR", DEFAULT_HACKATHON_DIR)
 NOTEBOOK_OUTPUT_PATH = os.path.join(HACKATHON_DIR, "data_analysis.ipynb")
 SESSION_SNAPSHOT_PATH = os.path.join(HACKATHON_DIR, ".streamlit_session_snapshot.pkl")
 SESSION_SNAPSHOT_TTL_SECONDS = 900
+ENABLE_SESSION_SNAPSHOT = False
 
 BRAND_NAME = "The Outliers"
 ACCENT = "#FFB347"
@@ -1532,7 +1533,9 @@ def generate_tabular_from_prompt(user_prompt: str, target_rows: int) -> pd.DataF
 # ---------------------------------------------------------------------------
 def init_state() -> None:
     if "_snapshot_restore_attempted" not in st.session_state:
-        restored = restore_session_snapshot(SESSION_SNAPSHOT_TTL_SECONDS)
+        restored = False
+        if ENABLE_SESSION_SNAPSHOT:
+            restored = restore_session_snapshot(SESSION_SNAPSHOT_TTL_SECONDS)
         st.session_state["_snapshot_restore_attempted"] = True
         st.session_state["_snapshot_restored"] = restored
 
@@ -1566,6 +1569,8 @@ def init_state() -> None:
         st.session_state.syn_last_guardrails: dict[str, Any] | None = None
     if "mv_bundle" not in st.session_state:
         st.session_state.mv_bundle: dict[str, Any] | None = None
+    if "upload_widget_nonce" not in st.session_state:
+        st.session_state.upload_widget_nonce = 0
 
 
 def restore_session_snapshot(max_age_seconds: int) -> bool:
@@ -1590,6 +1595,8 @@ def restore_session_snapshot(max_age_seconds: int) -> bool:
 
 def save_session_snapshot() -> None:
     """Persist key app state so brief idle reconnects can recover context."""
+    if not ENABLE_SESSION_SNAPSHOT:
+        return
     keys_to_save = [
         "data_registry",
         "file_signatures",
@@ -1611,6 +1618,36 @@ def save_session_snapshot() -> None:
     except Exception:
         # Snapshot is best-effort and should never block app usage.
         return
+
+
+def delete_session_snapshot_file() -> None:
+    """Remove persisted snapshot so refresh starts from a clean state."""
+    try:
+        if os.path.exists(SESSION_SNAPSHOT_PATH):
+            os.remove(SESSION_SNAPSHOT_PATH)
+    except Exception:
+        return
+
+
+def clear_loaded_app_state() -> None:
+    """Clear all user-loaded/generated datasets and derived analysis state."""
+    st.session_state.data_registry = {}
+    st.session_state.file_signatures = set()
+    st.session_state.joined_df = None
+    st.session_state.join_summary = ""
+    st.session_state.synthetic_df = None
+    st.session_state.bot_generated_df = None
+    st.session_state.architect_generated_df = None
+    st.session_state.architect_seed_label = ""
+    st.session_state.critic_synth_df = None
+    st.session_state.critic_js_df = None
+    st.session_state.critic_utility_df = None
+    st.session_state.syn_last_guardrails = None
+    st.session_state.mv_bundle = None
+    st.session_state.jump_to_lens = False
+    st.session_state.jump_to_ai_astra = False
+    st.session_state.upload_widget_nonce = int(st.session_state.get("upload_widget_nonce", 0)) + 1
+    delete_session_snapshot_file()
 
 
 # ---------------------------------------------------------------------------
@@ -1638,6 +1675,7 @@ def render_sidebar() -> None:
         type=["csv", "xlsx", "xls", "json"],
         accept_multiple_files=True,
         label_visibility="collapsed",
+        key=f"sidebar_uploads_{st.session_state.upload_widget_nonce}",
     )
     st.sidebar.markdown(
         '<div class="sidebar-helper">200MB per file • CSV, XLSX, XLS, JSON</div>',
@@ -1698,13 +1736,9 @@ def render_sidebar() -> None:
                     )
 
     if st.sidebar.button("Clear Registry", use_container_width=True):
-        st.session_state.data_registry = {}
-        st.session_state.file_signatures = set()
-        st.session_state.joined_df = None
-        st.session_state.join_summary = ""
-        st.session_state.synthetic_df = None
-        st.session_state.bot_generated_df = None
+        clear_loaded_app_state()
         st.sidebar.success("Registry cleared.")
+        st.rerun()
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
 
