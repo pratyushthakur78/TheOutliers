@@ -2677,7 +2677,7 @@ def render_synthetic_generator_tab() -> None:
                 if best_df is None:
                     raise RuntimeError("No synthetic output generated.")
                 synthetic_df = best_df
-                guardrails_report = se.validate_synthetic_dataset(private_df, synthetic_df, [])
+                guardrails_report = validate_synthetic_dataset(private_df, synthetic_df, selected_pk)
                 st.session_state["syn_last_score"] = best_score
                 st.session_state["syn_last_attempts"] = attempts_used
                 st.session_state["syn_last_profile"] = critic_profile
@@ -2719,8 +2719,8 @@ def render_synthetic_generator_tab() -> None:
                 f"(threshold {profile_meta['pass_threshold']}/5)"
             )
         st.markdown("**Guardrails**")
-        se.render_guardrails_table(guardrails_report)
-        se.render_seed_synth_corr(private_df, synthetic_df, "syn_gen_corr")
+        render_guardrails_table(guardrails_report)
+        render_seed_synth_corr(private_df, synthetic_df, "syn_gen_corr")
         s1, s2 = st.columns(2)
         with s1:
             st.markdown("**JS Divergence (numeric columns)**")
@@ -3182,7 +3182,7 @@ def render_seed_plus_prompt_tab() -> None:
                     out = se.add_skew_for_stress_testing(out, skew_strength)
                 out = _reassign_primary_key_after_synthesis(seed_df, out, selected_pk)
                 js_df, utility_df = se.compute_fidelity_metrics(private_df, out)
-                guardrails_report = se.validate_synthetic_dataset(private_df, out, [])
+                guardrails_report = validate_synthetic_dataset(private_df, out, selected_pk)
             st.session_state.synthetic_df = out
             st.session_state["syn_last_js_df"] = js_df
             st.session_state["syn_last_utility_df"] = utility_df
@@ -3531,6 +3531,19 @@ def render_critic_tab() -> None:
         format_func=_display_dataset_label,
     )
     seed_df = seed_only[seed_label]
+    critic_pk_cols = st.multiselect(
+        "Primary-key columns for Critic checks",
+        options=list(seed_df.columns),
+        default=[],
+        key="critic_pk_cols",
+        help="Used in Guardrails checks (uniqueness and PK-aware validations).",
+    )
+    critic_profile = st.selectbox(
+        "Critic scoring profile",
+        options=list(SYN_CRITIC_PROFILES.keys()),
+        format_func=lambda k: SYN_CRITIC_PROFILES[k]["title"],
+        key="critic_profile",
+    )
     up = st.file_uploader("Upload synthetic CSV for Critic", type=["csv"], key="critic_upload_csv")
 
     if st.button("Run Critic", type="primary", use_container_width=True, key="critic_run_btn_main"):
@@ -3540,11 +3553,16 @@ def render_critic_tab() -> None:
             try:
                 synth_df = pd.read_csv(io.BytesIO(up.getvalue()), low_memory=False)
                 js_df, utility_df = se.compute_fidelity_metrics(seed_df, synth_df)
-                guardrails_report = se.validate_synthetic_dataset(seed_df, synth_df, [])
+                guardrails_report = validate_synthetic_dataset(seed_df, synth_df, critic_pk_cols)
+                critic_score = _synthetic_fidelity_score(js_df, utility_df, critic_profile)
+                critic_threshold = float(SYN_CRITIC_PROFILES[critic_profile]["pass_threshold"])
                 st.session_state.critic_synth_df = synth_df
                 st.session_state.critic_js_df = js_df
                 st.session_state.critic_utility_df = utility_df
                 st.session_state["critic_guardrails_report"] = guardrails_report
+                st.session_state["critic_score"] = critic_score
+                st.session_state["critic_threshold"] = critic_threshold
+                st.session_state["critic_profile"] = critic_profile
             except Exception as exc:
                 st.error(f"Critic failed: {exc}")
 
@@ -3553,17 +3571,28 @@ def render_critic_tab() -> None:
     utility_df = st.session_state.get("critic_utility_df")
     guardrails_report = st.session_state.get("critic_guardrails_report") or {}
     if synth_df is not None and js_df is not None and utility_df is not None:
-        avg_js = float(pd.to_numeric(js_df.get("js_divergence", pd.Series(dtype=float)), errors="coerce").dropna().mean() or 0.0)
-        corr_sim = utility_df.loc[utility_df["metric"] == "correlation_similarity", "value"]
-        corr_val = float(corr_sim.iloc[0]) if not corr_sim.empty and pd.notna(corr_sim.iloc[0]) else np.nan
-        if (avg_js <= 0.12) and (np.isnan(corr_val) or corr_val >= 0.70):
-            st.success(f"Critic verdict: PASS | avg JS={avg_js:.4f}" + (f" | corr similarity={corr_val:.3f}" if not np.isnan(corr_val) else ""))
+        latest_profile = st.session_state.get("critic_profile", "standard")
+        latest_threshold = float(
+            st.session_state.get(
+                "critic_threshold",
+                SYN_CRITIC_PROFILES.get(latest_profile, SYN_CRITIC_PROFILES["standard"])["pass_threshold"],
+            )
+        )
+        latest_score = float(st.session_state.get("critic_score", _synthetic_fidelity_score(js_df, utility_df, latest_profile)))
+        if latest_score >= latest_threshold:
+            st.success(
+                f"Critic verdict: PASS | score {latest_score:.2f}/5 "
+                f"(threshold {latest_threshold:.1f}/5)"
+            )
         else:
-            st.warning(f"Critic verdict: REVIEW | avg JS={avg_js:.4f}" + (f" | corr similarity={corr_val:.3f}" if not np.isnan(corr_val) else ""))
+            st.warning(
+                f"Critic verdict: REVIEW | score {latest_score:.2f}/5 "
+                f"(threshold {latest_threshold:.1f}/5)"
+            )
 
         st.markdown("**Guardrails**")
-        se.render_guardrails_table(guardrails_report)
-        se.render_seed_synth_corr(seed_df, synth_df, "critic_corr")
+        render_guardrails_table(guardrails_report)
+        render_seed_synth_corr(seed_df, synth_df, "critic_corr")
 
         c1, c2 = st.columns(2)
         with c1:
