@@ -1843,6 +1843,10 @@ def render_sidebar() -> None:
         help="Architect uses this prompt directly in Natural Language mode.",
     )
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
+    if st.sidebar.button("✨ Generate via AI Astra", key="sidebar_jump_ai_astra", type="primary", use_container_width=True):
+        st.session_state.jump_to_architect = True
+        st.session_state["_pending_gateway_input_mode"] = "Natural Language"
+        st.rerun()
 
     st.sidebar.markdown('<div class="sidebar-card">', unsafe_allow_html=True)
     st.sidebar.markdown(
@@ -1890,11 +1894,6 @@ def render_sidebar() -> None:
         except Exception as exc:
             st.sidebar.error(f"Demo load failed: {exc}")
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
-
-    if st.sidebar.button("✨ Generate via AI Astra", key="sidebar_jump_ai_astra", type="primary", use_container_width=True):
-        st.session_state.jump_to_architect = True
-        st.session_state["_pending_gateway_input_mode"] = "Natural Language"
-        st.rerun()
 
     if uploads:
         for file_obj in uploads:
