@@ -1910,10 +1910,6 @@ def render_synthetic_generator_tab() -> None:
         return
 
     st.markdown("### Privacy & masking - seed lens")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Seed rows", f"{len(seed_df):,}")
-    c2.metric("Columns", seed_df.shape[1])
-    c3.metric("Null cells", f"{int(seed_df.isna().sum().sum()):,}")
     pii_df = detect_pii_columns(seed_df)
     pii_candidates = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
     with st.expander("Privacy & masking - seed lens", expanded=False):
