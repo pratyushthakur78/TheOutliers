@@ -383,6 +383,35 @@ def inject_theme() -> None:
     text-transform: uppercase;
     margin-bottom: 0.45rem;
   }}
+  .architect-route-badge {{
+    position: relative;
+    overflow: hidden;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border-radius: 999px;
+    border: 1px solid rgba(245, 166, 35, 0.48);
+    background: linear-gradient(145deg, rgba(255, 241, 216, 0.95) 0%, rgba(255, 213, 150, 0.92) 100%);
+    color: #7c2d12;
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    padding: 0.3rem 0.74rem;
+    margin-top: 0.18rem;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.74), 0 7px 16px rgba(245, 158, 11, 0.16);
+  }}
+  .architect-route-badge::before {{
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -130%;
+    width: 58%;
+    height: 100%;
+    transform: skewX(-18deg);
+    background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,0.58), rgba(255,255,255,0));
+    animation: liquidShine 3.6s ease-in-out infinite;
+    pointer-events: none;
+  }}
   .minor-title {{
     color: #111827;
     font-size: 0.98rem;
@@ -3771,7 +3800,21 @@ def render_architect_unified_tab() -> None:
     has_gateway_seed = bool(st.session_state.get("data_registry"))
     has_gateway_prompt = bool(str(st.session_state.get("gateway_nl_prompt", "")).strip())
     route = _resolve_architect_route(gateway_mode, has_gateway_seed, has_gateway_prompt)
+    route_label = {
+        "seed": "Seed Data",
+        "seed_missing": "Seed Data",
+        "nl": "Natural Language",
+        "nl_missing": "Natural Language",
+        "both": "Both (Seed + Natural Language)",
+        "both_missing_seed": "Both (Seed + Natural Language)",
+        "both_missing_prompt": "Both (Seed + Natural Language)",
+        "both_missing_all": "Both (Seed + Natural Language)",
+    }.get(route, "Both (Seed + Natural Language)")
     st.caption(f"Gateway mode: **{gateway_mode}**")
+    st.markdown(
+        f'<div class="architect-route-badge">Current route: {html.escape(route_label)}</div>',
+        unsafe_allow_html=True,
+    )
     st.markdown("</div>", unsafe_allow_html=True)
 
     if route == "seed":
