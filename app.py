@@ -1583,6 +1583,10 @@ def init_state() -> None:
         st.session_state.bot_generated_df: pd.DataFrame | None = None
     if "jump_to_ai_astra" not in st.session_state:
         st.session_state.jump_to_ai_astra = False
+    if "jump_to_architect" not in st.session_state:
+        st.session_state.jump_to_architect = False
+    if "architect_input_mode" not in st.session_state:
+        st.session_state.architect_input_mode = "Seed Data"
     if "jump_to_lens" not in st.session_state:
         st.session_state.jump_to_lens = False
     if "architect_generated_df" not in st.session_state:
@@ -1676,6 +1680,8 @@ def clear_loaded_app_state() -> None:
     st.session_state.mv_bundle = None
     st.session_state.jump_to_lens = False
     st.session_state.jump_to_ai_astra = False
+    st.session_state.jump_to_architect = False
+    st.session_state.architect_input_mode = "Seed Data"
     st.session_state.upload_widget_nonce = int(st.session_state.get("upload_widget_nonce", 0)) + 1
     delete_session_snapshot_file()
 
@@ -1685,11 +1691,9 @@ def clear_loaded_app_state() -> None:
 # ---------------------------------------------------------------------------
 def render_sidebar() -> None:
     st.sidebar.markdown(
-        f"""
+        """
         <div class="sidebar-hero">
             <div class="sidebar-kicker">Gateway</div>
-            <div class="sidebar-title">{BRAND_NAME}</div>
-            <div class="sidebar-subtitle">Multi-File Data Joiner</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1714,7 +1718,8 @@ def render_sidebar() -> None:
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
     if st.sidebar.button("✨ Generate via AI Astra", key="sidebar_jump_ai_astra", type="primary", use_container_width=True):
-        st.session_state.jump_to_ai_astra = True
+        st.session_state.jump_to_architect = True
+        st.session_state.architect_input_mode = "Natural Language"
         st.rerun()
 
     if uploads:
@@ -3478,6 +3483,22 @@ def render_model_validation_sandbox_tab() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def render_architect_unified_tab() -> None:
+    st.markdown('<div class="block-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Architect</div>', unsafe_allow_html=True)
+    mode = st.radio(
+        "Type of input",
+        ["Seed Data", "Natural Language"],
+        horizontal=True,
+        key="architect_input_mode",
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+    if mode == "Seed Data":
+        render_synthetic_generator_tab()
+    else:
+        render_data_bot_tab()
+
+
 # ---------------------------------------------------------------------------
 # App entry
 # ---------------------------------------------------------------------------
@@ -3501,11 +3522,10 @@ def main() -> None:
         """
         <div style="padding: 0.25rem 0 0.9rem 0;">
             <div style="font-size: 2rem; font-weight: 800; letter-spacing: 0.2px; color: #1f2937;">
-                Synthetic Data Foundry
-                <span style="color: #FFB347;">- by The Outliers</span>
+                Gateway
             </div>
             <div style="margin-top: 0.25rem; color: #6b7280; font-size: 0.98rem;">
-                Enterprise-grade workspace for profiling, joining, and generating synthetic datasets.
+                End-to-end: profile your seed, generate synthetic data with the Architect, auto-validate with the critic, and export.
             </div>
         </div>
         """,
@@ -3513,28 +3533,22 @@ def main() -> None:
     )
 
     default_tabs = [
-        "Architect-2",
-        "AI Astra",
         "Lens",
-        "Architect-1",
+        "Architect",
         "Critic",
         "Model Validation Sandbox",
     ]
     if st.session_state.get("jump_to_lens"):
         tab_labels = [
             "Lens",
-            "Architect-2",
-            "AI Astra",
-            "Architect-1",
+            "Architect",
             "Critic",
             "Model Validation Sandbox",
         ]
-    elif st.session_state.get("jump_to_ai_astra"):
+    elif st.session_state.get("jump_to_architect"):
         tab_labels = [
-            "AI Astra",
-            "Architect-2",
+            "Architect",
             "Lens",
-            "Architect-1",
             "Critic",
             "Model Validation Sandbox",
         ]
@@ -3542,10 +3556,8 @@ def main() -> None:
         tab_labels = default_tabs
 
     tab_renderer = {
-        "Architect-2": render_synthetic_generator_tab,
-        "AI Astra": render_data_bot_tab,
         "Lens": render_lens_tab,
-        "Architect-1": render_architect_tab,
+        "Architect": render_architect_unified_tab,
         "Critic": render_critic_tab,
         "Model Validation Sandbox": render_model_validation_sandbox_tab,
     }
@@ -3555,8 +3567,8 @@ def main() -> None:
             tab_renderer[label]()
     if st.session_state.get("jump_to_lens"):
         st.session_state.jump_to_lens = False
-    if st.session_state.get("jump_to_ai_astra"):
-        st.session_state.jump_to_ai_astra = False
+    if st.session_state.get("jump_to_architect"):
+        st.session_state.jump_to_architect = False
 
     save_session_snapshot()
 
