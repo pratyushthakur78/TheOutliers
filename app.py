@@ -690,6 +690,39 @@ def compute_fidelity_metrics(real_df: pd.DataFrame, synth_df: pd.DataFrame) -> t
     return js_df, utility_df
 
 
+def export_dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
+    """Export dataframe with key Lens sheets into an Excel workbook."""
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        summary_df = pd.DataFrame(
+            [
+                {"metric": "rows", "value": len(df)},
+                {"metric": "columns", "value": len(df.columns)},
+                {"metric": "numeric_columns", "value": int(len(df.select_dtypes(include=[np.number]).columns))},
+                {"metric": "categorical_columns", "value": int(len(df.select_dtypes(exclude=[np.number]).columns))},
+                {"metric": "duplicate_rows", "value": int(df.duplicated().sum())},
+                {"metric": "null_cells", "value": int(df.isna().sum().sum())},
+            ]
+        )
+        summary_df.to_excel(writer, sheet_name="00_Summary", index=False)
+
+        schema_df = pd.DataFrame(
+            {
+                "column": df.columns,
+                "dtype": [str(t) for t in df.dtypes],
+                "non_null_count": df.notna().sum().values,
+                "null_count": df.isna().sum().values,
+                "unique_count": df.nunique(dropna=True).values,
+            }
+        )
+        schema_df.to_excel(writer, sheet_name="01_Schema", index=False)
+
+        stats_df = build_column_statistics(df)
+        stats_df.to_excel(writer, sheet_name="02_Column_Stats", index=False)
+        df.head(100).to_excel(writer, sheet_name="03_Head_100", index=False)
+    return buf.getvalue()
+
+
 def generate_with_azure_llm(
     seed_df: pd.DataFrame,
     target_rows: int,
@@ -2175,12 +2208,23 @@ def render_lens_tab() -> None:
 
     source = st.selectbox("Lens source", list(options.keys()), key="lens_source")
     df = options[source]
+    is_synthetic = source in ("Synthetic Generator output", "Architect output", "AI Astra output")
 
-    m1, m2, m3, m4 = st.columns(4)
+    if is_synthetic:
+        st.markdown("#### Synthetic - at a glance")
+    else:
+        st.markdown("#### Seed - at a glance")
+
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Rows", f"{len(df):,}")
     m2.metric("Columns", df.shape[1])
-    m3.metric("Null Cells", f"{int(df.isna().sum().sum()):,}")
-    m4.metric("Duplicates", f"{int(df.duplicated().sum()):,}")
+    m3.metric("Numeric", int(len(df.select_dtypes(include=[np.number]).columns)))
+    m4.metric("Datetime (inferred)", int(len(df.select_dtypes(include=["datetime64[ns]", "datetime64[ns, UTC]"]).columns)))
+    m5.metric("Duplicates", f"{int(df.duplicated().sum()):,}")
+    n_cat = int(len(df.select_dtypes(exclude=[np.number]).columns))
+    miss_cells = int(df.isna().sum().sum())
+    mem_mb = float(df.memory_usage(deep=True).sum() / (1024 * 1024))
+    st.caption(f"Text / boolean columns: **{n_cat}** - Missing cells: **{miss_cells:,}** - ~**{mem_mb:.2f} MB** in memory")
 
     schema_df = pd.DataFrame(
         {
@@ -2195,8 +2239,24 @@ def render_lens_tab() -> None:
         schema_df["missing_rate_%"] = ((schema_df["null_count"] / len(df)) * 100).round(2)
     else:
         schema_df["missing_rate_%"] = 0.0
-    st.markdown('<div class="minor-title">Schema Snapshot</div>', unsafe_allow_html=True)
-    st.dataframe(schema_df, use_container_width=True, height=280)
+    col_a, col_b = st.columns((1.15, 0.85))
+    with col_a:
+        st.markdown("**Schema**")
+        st.dataframe(schema_df, use_container_width=True, height=320)
+    with col_b:
+        dtype_counts = df.dtypes.astype(str).value_counts()
+        fig_dtype = px.pie(
+            values=dtype_counts.values,
+            names=dtype_counts.index,
+            title="Types",
+            hole=0.4,
+            color_discrete_sequence=px.colors.qualitative.Set2,
+        )
+        fig_dtype.update_layout(height=320, margin=dict(t=40, l=20, r=20, b=20))
+        st.plotly_chart(fig_dtype, use_container_width=True, key=f"lens_dtype_{source}")
+
+    with st.expander("All column names", expanded=False):
+        st.write(", ".join(df.columns.astype(str).tolist()))
 
     c1, c2 = st.columns(2)
     with c1:
@@ -2222,10 +2282,6 @@ def render_lens_tab() -> None:
             st.plotly_chart(fig_corr, use_container_width=True)
         else:
             st.info("Need at least two numeric columns for correlation heatmap.")
-
-    st.markdown('<div class="minor-title">Column Statistics</div>', unsafe_allow_html=True)
-    stats_df = build_column_statistics(df)
-    st.dataframe(stats_df, use_container_width=True, height=320)
 
     st.markdown('<div class="minor-title">Explore & Export</div>', unsafe_allow_html=True)
     lens_key = re.sub(r"[^A-Za-z0-9_]+", "_", source)[:50]
@@ -2268,8 +2324,51 @@ def render_lens_tab() -> None:
         else:
             st.info("No categorical columns found.")
 
+    with st.expander("Correlation matrix (numeric features)", expanded=False):
+        num = df.select_dtypes(include=[np.number])
+        if num.shape[1] >= 2:
+            corr = num.corr(numeric_only=True)
+            fig_corr_all = px.imshow(
+                corr,
+                text_auto=".2f",
+                aspect="auto",
+                color_continuous_scale="RdBu_r",
+                zmin=-1,
+                zmax=1,
+                title="Numeric correlations",
+            )
+            fig_corr_all.update_layout(height=420, margin=dict(t=40, l=20, r=20, b=20))
+            st.plotly_chart(fig_corr_all, use_container_width=True, key=f"lens_corr_full_{lens_key}")
+        else:
+            st.caption("Need at least two numeric columns.")
+
+    with st.expander("Full column statistics", expanded=False):
+        stats_df = build_column_statistics(df)
+        st.dataframe(stats_df, use_container_width=True, height=420)
+
+    st.markdown("**Potentially sensitive columns**")
+    pii_df = detect_pii_columns(df)
+    pii_cols = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
+    if not pii_cols:
+        st.caption(
+            "No columns matched address, name, phone, PAN, Aadhaar, or identifier checks "
+            "(column names and sample values)."
+        )
+    else:
+        st.dataframe(pd.DataFrame({"Column": pii_cols}), use_container_width=True, hide_index=True)
+
+    st.markdown("**Preview**")
+    npeek = st.slider("Rows (head / tail)", 5, 80, 15, key=f"lens_npeek_{lens_key}")
+    p1, p2 = st.columns(2)
+    with p1:
+        st.caption("Head")
+        st.dataframe(df.head(npeek), use_container_width=True, height=230)
+    with p2:
+        st.caption("Tail")
+        st.dataframe(df.tail(min(npeek, len(df))), use_container_width=True, height=230)
+
     export_base = re.sub(r"[^A-Za-z0-9._-]+", "_", source)[:36]
-    d1, d2 = st.columns(2)
+    d1, d2, d3 = st.columns(3)
     with d1:
         st.download_button(
             "Download Lens data (CSV)",
@@ -2288,6 +2387,10 @@ def render_lens_tab() -> None:
             use_container_width=True,
             key=f"lens_xlsx_{lens_key}",
         )
+    with d3:
+        if st.button("Use as Architect seed", use_container_width=True, key=f"lens_use_seed_{lens_key}"):
+            st.session_state.architect_seed_source = source
+            st.success("Selected source set for Architect.")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
