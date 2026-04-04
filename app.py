@@ -53,7 +53,21 @@ ENABLE_SESSION_SNAPSHOT = False
 
 BRAND_NAME = "The Outliers"
 ACCENT = "#FFB347"
-REFERENCE_HACKATHON_DIR = os.path.join(HACKATHON_DIR, "Hackathon")
+REFERENCE_HACKATHON_CANDIDATES = [
+    os.getenv("REFERENCE_HACKATHON_DIR", "").strip(),
+    os.path.join(HACKATHON_DIR, "Hackathon"),
+    HACKATHON_DIR,
+    os.path.join(REPO_ROOT, "Hackathon"),
+    REPO_ROOT,
+]
+REFERENCE_HACKATHON_CANDIDATES = [p for p in REFERENCE_HACKATHON_CANDIDATES if p]
+REFERENCE_HACKATHON_DIR = next(
+    (
+        p for p in REFERENCE_HACKATHON_CANDIDATES
+        if os.path.isfile(os.path.join(p, "foundry_ml_eval.py"))
+    ),
+    "",
+)
 
 # Optional: load exact ML validation helpers from reference Hackathon folder.
 REF_ML_EVAL_AVAILABLE = False
@@ -64,7 +78,7 @@ ref_ml_fidelity_rating_extended = None
 ref_permutation_importance_df = None
 ref_train_on_synthetic_eval_on_real = None
 ref_train_predict_metrics_train_test = None
-if os.path.isdir(REFERENCE_HACKATHON_DIR):
+if REFERENCE_HACKATHON_DIR and os.path.isdir(REFERENCE_HACKATHON_DIR):
     if REFERENCE_HACKATHON_DIR not in sys.path:
         sys.path.insert(0, REFERENCE_HACKATHON_DIR)
     try:
@@ -3724,8 +3738,11 @@ def render_model_validation_sandbox_tab() -> None:
     synth_df = synth_df[common_cols]
 
     if not REF_ML_EVAL_AVAILABLE:
+        looked = [p for p in REFERENCE_HACKATHON_CANDIDATES if p]
+        looked_txt = " | ".join(looked[:5])
         st.error(
-            f"Reference ML sandbox helpers are unavailable. Ensure this folder exists: {REFERENCE_HACKATHON_DIR}"
+            "Reference ML sandbox helpers are unavailable. "
+            f"Expected `foundry_ml_eval.py` in one of: {looked_txt}"
         )
         st.markdown("</div>", unsafe_allow_html=True)
         return
