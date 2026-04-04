@@ -3658,8 +3658,17 @@ def render_critic_tab() -> None:
             "Download Critic upload report (JSON)",
             data=json.dumps(
                 {
-                    "avg_js": avg_js,
-                    "corr_similarity": None if np.isnan(corr_val) else corr_val,
+                    "avg_js": float(
+                        pd.to_numeric(js_df.get("js_divergence", pd.Series(dtype=float)), errors="coerce")
+                        .dropna()
+                        .mean()
+                        or 0.0
+                    ),
+                    "corr_similarity": (
+                        None
+                        if utility_df.loc[utility_df["metric"] == "correlation_similarity", "value"].empty
+                        else float(utility_df.loc[utility_df["metric"] == "correlation_similarity", "value"].iloc[0])
+                    ),
                     "js": js_df.to_dict(orient="records"),
                     "utility": utility_df.to_dict(orient="records"),
                     "guardrails": guardrails_report,
