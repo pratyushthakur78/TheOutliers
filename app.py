@@ -2546,6 +2546,17 @@ def render_synthetic_generator_tab() -> None:
             ],
             key="syn_model_choice",
         )
+    numeric_jitter = float(
+        st.slider(
+            "Numeric jitter",
+            min_value=0.0,
+            max_value=0.20,
+            value=0.02,
+            step=0.005,
+            key="syn_numeric_jitter",
+            help="Controls additional numeric perturbation during synthetic generation.",
+        )
+    )
 
     user_instruction = ""
     profile_mode = "Normalized (seed-aligned)"
@@ -2693,6 +2704,7 @@ def render_synthetic_generator_tab() -> None:
                         candidate = se.align_synthetic_to_seed_distribution(private_df, candidate)
                     else:
                         candidate = se.add_skew_for_stress_testing(candidate, skew_strength)
+                    candidate = _apply_generation_numeric_jitter(private_df, candidate, numeric_jitter, iter_seed)
                     candidate = _reassign_primary_key_after_synthesis(seed_df, candidate, selected_pk)
 
                     js_try, utility_try = se.compute_fidelity_metrics(private_df, candidate)
@@ -3078,6 +3090,40 @@ def _reassign_primary_key_after_synthesis(seed_df: pd.DataFrame, synth_df: pd.Da
     return out
 
 
+def _apply_generation_numeric_jitter(
+    reference_df: pd.DataFrame,
+    synth_df: pd.DataFrame,
+    jitter_strength: float,
+    rng_seed: int,
+) -> pd.DataFrame:
+    """Apply controllable numeric jitter to synthetic output (keeps binary indicators intact)."""
+    if jitter_strength <= 0 or synth_df.empty:
+        return synth_df
+    out = synth_df.copy()
+    rng = np.random.default_rng(rng_seed)
+    common_num_cols = [
+        c for c in out.columns
+        if c in reference_df.columns
+        and pd.api.types.is_numeric_dtype(reference_df[c])
+        and pd.api.types.is_numeric_dtype(out[c])
+    ]
+    for c in common_num_cols:
+        if _is_binary_indicator(reference_df[c]):
+            continue
+        ref_std = float(pd.to_numeric(reference_df[c], errors="coerce").std() or 0.0)
+        if ref_std <= 0:
+            ref_std = float(pd.to_numeric(out[c], errors="coerce").std() or 0.0)
+        if ref_std <= 0:
+            continue
+        vals = pd.to_numeric(out[c], errors="coerce")
+        mask = vals.notna()
+        if not mask.any():
+            continue
+        vals.loc[mask] = vals.loc[mask] + rng.normal(0, ref_std * jitter_strength, size=int(mask.sum()))
+        out[c] = vals
+    return out
+
+
 def render_seed_plus_prompt_tab() -> None:
     st.markdown('<div class="block-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Architect (Seed + Natural Language)</div>', unsafe_allow_html=True)
@@ -3189,6 +3235,17 @@ def render_seed_plus_prompt_tab() -> None:
             help="Use same seed + same config for repeatable output in this session.",
         )
     )
+    both_numeric_jitter = float(
+        st.slider(
+            "Numeric jitter",
+            min_value=0.0,
+            max_value=0.20,
+            value=0.02,
+            step=0.005,
+            key="both_numeric_jitter",
+            help="Controls additional numeric perturbation during synthetic generation.",
+        )
+    )
     skew_strength = 0.35
     if profile_mode == "Skewed (stress-test)":
         skew_strength = float(
@@ -3211,6 +3268,7 @@ def render_seed_plus_prompt_tab() -> None:
                     out = se.align_synthetic_to_seed_distribution(private_df, out)
                 else:
                     out = se.add_skew_for_stress_testing(out, skew_strength)
+                out = _apply_generation_numeric_jitter(private_df, out, both_numeric_jitter, both_seed)
                 out = _reassign_primary_key_after_synthesis(seed_df, out, selected_pk)
                 js_df, utility_df = se.compute_fidelity_metrics(private_df, out)
                 guardrails_report = validate_synthetic_dataset(private_df, out, selected_pk)
