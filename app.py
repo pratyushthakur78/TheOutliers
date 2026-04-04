@@ -1594,6 +1594,11 @@ def init_state() -> None:
         st.session_state.architect_input_mode = "Seed Data"
     if "gateway_input_mode" not in st.session_state:
         st.session_state.gateway_input_mode = "Both"
+    if "gateway_nl_prompt" not in st.session_state:
+        st.session_state.gateway_nl_prompt = (
+            "Generate credit-risk DPD data with customer_id, loan_id, dpd_bucket, "
+            "exposure, region, segment, delinquency_date."
+        )
     if "jump_to_lens" not in st.session_state:
         st.session_state.jump_to_lens = False
     if "architect_generated_df" not in st.session_state:
@@ -1690,6 +1695,10 @@ def clear_loaded_app_state() -> None:
     st.session_state.jump_to_architect = False
     st.session_state.architect_input_mode = "Seed Data"
     st.session_state.gateway_input_mode = "Both"
+    st.session_state.gateway_nl_prompt = (
+        "Generate credit-risk DPD data with customer_id, loan_id, dpd_bucket, "
+        "exposure, region, segment, delinquency_date."
+    )
     st.session_state.upload_widget_nonce = int(st.session_state.get("upload_widget_nonce", 0)) + 1
     delete_session_snapshot_file()
 
@@ -1728,12 +1737,19 @@ def render_sidebar() -> None:
 
     st.sidebar.markdown('<div class="sidebar-card">', unsafe_allow_html=True)
     st.sidebar.markdown('<div class="sidebar-card-title">Gateway Input Mode</div>', unsafe_allow_html=True)
-    st.sidebar.radio(
+    gateway_mode = st.sidebar.radio(
         "Gateway Input Mode",
         ["Seed Data", "Natural Language", "Both"],
         key="gateway_input_mode",
         label_visibility="collapsed",
     )
+    if gateway_mode in ("Natural Language", "Both"):
+        st.sidebar.text_area(
+            "Natural Language Prompt",
+            key="gateway_nl_prompt",
+            height=110,
+            help="Architect uses this prompt directly in Natural Language mode.",
+        )
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
     if st.sidebar.button("✨ Generate via AI Astra", key="sidebar_jump_ai_astra", type="primary", use_container_width=True):
@@ -2664,14 +2680,13 @@ def render_synthetic_generator_tab() -> None:
 def render_data_bot_tab() -> None:
     st.markdown('<div class="block-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">AI Astra</div>', unsafe_allow_html=True)
-    st.caption("Describe the dataset you want (e.g., inventory, credit-risk DPD, loan ledger).")
-
-    request_text = st.text_area(
-        "Describe required data",
-        value="Generate credit-risk DPD data with customer_id, loan_id, dpd_bucket, exposure, region, segment, delinquency_date.",
-        height=120,
-        key="bot_request_text",
-    )
+    st.caption("Prompt is taken from Gateway input mode.")
+    request_text = str(st.session_state.get("gateway_nl_prompt", "")).strip()
+    if not request_text:
+        st.warning("Add a Natural Language prompt in Gateway to generate data.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+    st.markdown(f"**Gateway prompt:** {request_text}")
     target_rows = int(
         st.number_input(
             "Rows to generate",
@@ -3617,8 +3632,10 @@ def main() -> None:
                 Synthetic Data Foundry
                 <span style="color: #FFB347;">(Core Engine)</span>
             </div>
-            <div style="margin-top: 0.05rem; color: #9ca3af; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;">
-                Input · Core Engine · Output
+            <div style="margin-top: 0.22rem; display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;">
+                <span style="font-size: 0.82rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #92400e; background: #fff3e0; border: 1px solid #f7d7a6; border-radius: 999px; padding: 0.16rem 0.52rem;">Input</span>
+                <span style="font-size: 0.82rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #92400e; background: #fff3e0; border: 1px solid #f7d7a6; border-radius: 999px; padding: 0.16rem 0.52rem;">Core Engine</span>
+                <span style="font-size: 0.82rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #92400e; background: #fff3e0; border: 1px solid #f7d7a6; border-radius: 999px; padding: 0.16rem 0.52rem;">Output</span>
             </div>
             <div style="margin-top: 0.25rem; color: #6b7280; font-size: 0.98rem;">
                 End-to-end: profile your seed, generate synthetic data with the Architect, auto-validate with the critic, and export.
