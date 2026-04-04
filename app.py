@@ -2315,7 +2315,12 @@ def render_synthetic_generator_tab() -> None:
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    seed_source = st.selectbox("Seed source", source_options, key="syn_seed_source")
+    seed_source = st.selectbox(
+        "Seed source",
+        source_options,
+        key="syn_seed_source",
+        format_func=_display_dataset_label,
+    )
     seed_df: pd.DataFrame | None = None
 
     if seed_source == "Joined dataset":
@@ -2926,6 +2931,12 @@ def _resolve_architect_route(gateway_mode: str, has_seed: bool, has_prompt: bool
     return "both_missing_prompt"
 
 
+def _display_dataset_label(label: str) -> str:
+    if isinstance(label, str) and label.startswith("Registry::"):
+        return label.split("Registry::", 1)[1]
+    return str(label)
+
+
 def render_seed_plus_prompt_tab() -> None:
     st.markdown('<div class="block-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Architect (Seed + Natural Language)</div>', unsafe_allow_html=True)
@@ -2945,7 +2956,12 @@ def render_seed_plus_prompt_tab() -> None:
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    seed_source = st.selectbox("Seed source", source_options, key="both_seed_source")
+    seed_source = st.selectbox(
+        "Seed source",
+        source_options,
+        key="both_seed_source",
+        format_func=_display_dataset_label,
+    )
     if seed_source == "Joined dataset":
         seed_df = st.session_state.joined_df.copy()
     else:
@@ -3068,7 +3084,12 @@ def render_lens_tab() -> None:
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    source = st.selectbox("Lens source", list(options.keys()), key="lens_source")
+    source = st.selectbox(
+        "Lens source",
+        list(options.keys()),
+        key="lens_source",
+        format_func=_display_dataset_label,
+    )
     df = options[source]
     is_synthetic = source in ("Synthetic Generator output", "Architect output", "AI Astra output")
 
@@ -3245,7 +3266,12 @@ def render_architect_tab() -> None:
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    seed_label = st.selectbox("Seed source", list(seed_only.keys()), key="architect_seed_source")
+    seed_label = st.selectbox(
+        "Seed source",
+        list(seed_only.keys()),
+        key="architect_seed_source",
+        format_func=_display_dataset_label,
+    )
     seed_df = seed_only[seed_label]
 
     pii_df = dp.detect_pii_columns(seed_df)
@@ -3345,7 +3371,12 @@ def render_critic_tab() -> None:
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    seed_label = st.selectbox("Seed source for critic", list(seed_only.keys()), key="critic_seed_source")
+    seed_label = st.selectbox(
+        "Seed source for critic",
+        list(seed_only.keys()),
+        key="critic_seed_source",
+        format_func=_display_dataset_label,
+    )
     seed_df = seed_only[seed_label]
     up = st.file_uploader("Upload synthetic CSV for Critic", type=["csv"], key="critic_upload_csv")
 
@@ -3479,8 +3510,18 @@ def render_model_validation_sandbox_tab() -> None:
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    seed_label = st.selectbox("Seed dataset", list(seed_only.keys()), key="mv_seed_src")
-    synth_label = st.selectbox("Synthetic dataset", list(synth_only.keys()), key="mv_synth_src")
+    seed_label = st.selectbox(
+        "Seed dataset",
+        list(seed_only.keys()),
+        key="mv_seed_src",
+        format_func=_display_dataset_label,
+    )
+    synth_label = st.selectbox(
+        "Synthetic dataset",
+        list(synth_only.keys()),
+        key="mv_synth_src",
+        format_func=_display_dataset_label,
+    )
     real_df = seed_only[seed_label].copy()
     synth_df = synth_only[synth_label].copy()
     common_cols = [c for c in real_df.columns if c in synth_df.columns]
