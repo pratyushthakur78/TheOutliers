@@ -593,6 +593,20 @@ def detect_pii_columns(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _is_binary_indicator(series: pd.Series) -> bool:
+    """True when series is effectively a binary 0/1 or boolean indicator."""
+    s = series.dropna()
+    if s.empty:
+        return False
+    if pd.api.types.is_bool_dtype(series):
+        return True
+    s_num = pd.to_numeric(s, errors="coerce").dropna()
+    if s_num.empty:
+        return False
+    uniques = set(np.unique(s_num.values))
+    return uniques.issubset({0, 1})
+
+
 @st.cache_data(show_spinner=False)
 def apply_privacy_transform(
     df: pd.DataFrame,
@@ -624,6 +638,9 @@ def apply_privacy_transform(
     if noise_level > 0:
         num_cols = [c for c in out.columns if pd.api.types.is_numeric_dtype(out[c])]
         for c in num_cols:
+            # Preserve binary indicator columns as strict 0/1.
+            if _is_binary_indicator(out[c]):
+                continue
             std = float(pd.to_numeric(out[c], errors="coerce").std() or 0.0)
             if std <= 0:
                 continue
@@ -640,6 +657,10 @@ def generate_bootstrap_synthetic(seed_df: pd.DataFrame, target_rows: int) -> pd.
     out = seed_df.sample(n=target_rows, replace=True, random_state=42).reset_index(drop=True)
     num_cols = [c for c in out.columns if pd.api.types.is_numeric_dtype(out[c])]
     for c in num_cols:
+        # Keep binary indicator fields unchanged (e.g., default_flag_12m).
+        if _is_binary_indicator(seed_df[c]):
+            out[c] = pd.to_numeric(out[c], errors="coerce").round().clip(0, 1)
+            continue
         std = float(pd.to_numeric(out[c], errors="coerce").std() or 0.0)
         if std > 0:
             out[c] = pd.to_numeric(out[c], errors="coerce") + np.random.normal(0, std * 0.02, size=len(out))
@@ -1275,6 +1296,12 @@ def align_synthetic_to_seed_distribution(seed_df: pd.DataFrame, synthetic_df: pd
         out_s = out[col]
 
         if pd.api.types.is_numeric_dtype(seed_s):
+            if _is_binary_indicator(seed_s):
+                # Enforce strict binary values based on seed prevalence.
+                p_one = float(pd.to_numeric(seed_s, errors="coerce").fillna(0).clip(0, 1).mean())
+                sampled = rng.choice([0, 1], size=len(out), replace=True, p=[1 - p_one, p_one])
+                out[col] = pd.Series(sampled, index=out.index)
+                continue
             seed_num = pd.to_numeric(seed_s, errors="coerce").dropna()
             out_num = pd.to_numeric(out_s, errors="coerce")
             if seed_num.empty:
@@ -1310,6 +1337,9 @@ def add_skew_for_stress_testing(df: pd.DataFrame, skew_strength: float) -> pd.Da
     rng = np.random.default_rng(42)
     num_cols = [c for c in out.columns if pd.api.types.is_numeric_dtype(out[c])]
     for c in num_cols:
+        if _is_binary_indicator(out[c]):
+            out[c] = pd.to_numeric(out[c], errors="coerce").round().clip(0, 1)
+            continue
         s = pd.to_numeric(out[c], errors="coerce")
         valid_mask = s.notna()
         if not valid_mask.any():
