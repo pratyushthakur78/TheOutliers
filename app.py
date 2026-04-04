@@ -2256,32 +2256,27 @@ def render_lens_tab() -> None:
         st.plotly_chart(fig_dtype, use_container_width=True, key=f"lens_dtype_{source}")
 
     with st.expander("All column names", expanded=False):
-        st.write(", ".join(df.columns.astype(str).tolist()))
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown('<div class="minor-title">Missingness</div>', unsafe_allow_html=True)
-        miss = schema_df[["column", "missing_rate_%"]].sort_values("missing_rate_%", ascending=False).head(25)
-        fig_miss = px.bar(
-            miss,
-            x="missing_rate_%",
-            y="column",
-            orientation="h",
-            color="missing_rate_%",
-            color_continuous_scale="Oranges",
-        )
-        fig_miss.update_layout(height=360, margin=dict(t=20, l=20, r=20, b=20))
-        st.plotly_chart(fig_miss, use_container_width=True)
-    with c2:
-        st.markdown('<div class="minor-title">Correlations (numeric)</div>', unsafe_allow_html=True)
-        num = df.select_dtypes(include=[np.number])
-        if num.shape[1] >= 2:
-            corr = num.corr(numeric_only=True)
-            fig_corr = px.imshow(corr, text_auto=".2f", aspect="auto", color_continuous_scale="RdBu_r", zmin=-1, zmax=1)
-            fig_corr.update_layout(height=360, margin=dict(t=20, l=20, r=20, b=20))
-            st.plotly_chart(fig_corr, use_container_width=True)
+        column_names = [str(c) for c in df.columns]
+        if not column_names:
+            st.markdown(
+                '<div class="sidebar-empty">No columns found.</div>',
+                unsafe_allow_html=True,
+            )
         else:
-            st.info("Need at least two numeric columns for correlation heatmap.")
+            dynamic_height = max(96, min(172, 88 + len(column_names) * 9))
+            chips_html = "".join(
+                f'<div class="column-chip">{html.escape(col_name)}</div>'
+                for col_name in column_names
+            )
+            st.markdown(
+                (
+                    f'<div class="columns-liquid-box" style="max-height:{dynamic_height}px;">'
+                    f'<div class="columns-liquid-head"><span>Columns</span><span class="columns-liquid-count">{len(column_names)}</span></div>'
+                    f'<div class="columns-chip-grid">{chips_html}</div>'
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
 
     st.markdown('<div class="minor-title">Explore & Export</div>', unsafe_allow_html=True)
     lens_key = re.sub(r"[^A-Za-z0-9_]+", "_", source)[:50]
@@ -2323,24 +2318,6 @@ def render_lens_tab() -> None:
             st.plotly_chart(fig_cat, use_container_width=True, key=f"lens_cat_fig_{lens_key}")
         else:
             st.info("No categorical columns found.")
-
-    with st.expander("Correlation matrix (numeric features)", expanded=False):
-        num = df.select_dtypes(include=[np.number])
-        if num.shape[1] >= 2:
-            corr = num.corr(numeric_only=True)
-            fig_corr_all = px.imshow(
-                corr,
-                text_auto=".2f",
-                aspect="auto",
-                color_continuous_scale="RdBu_r",
-                zmin=-1,
-                zmax=1,
-                title="Numeric correlations",
-            )
-            fig_corr_all.update_layout(height=420, margin=dict(t=40, l=20, r=20, b=20))
-            st.plotly_chart(fig_corr_all, use_container_width=True, key=f"lens_corr_full_{lens_key}")
-        else:
-            st.caption("Need at least two numeric columns.")
 
     with st.expander("Full column statistics", expanded=False):
         stats_df = build_column_statistics(df)
