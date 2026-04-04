@@ -2398,7 +2398,7 @@ def render_synthetic_generator_tab() -> None:
         )
         selected_pii = st.multiselect(
             "Columns to mask/drop",
-            options=pii_candidates,
+            options=list(seed_df.columns),
             default=pii_candidates,
             key="syn_privacy_cols",
         )
@@ -3098,7 +3098,7 @@ def render_seed_plus_prompt_tab() -> None:
         )
         selected_pii = st.multiselect(
             "Columns to mask/drop",
-            options=pii_candidates,
+            options=list(seed_df.columns),
             default=pii_candidates,
             key="both_privacy_cols",
         )
