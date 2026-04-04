@@ -1727,6 +1727,24 @@ def render_sidebar() -> None:
     )
 
     st.sidebar.markdown('<div class="sidebar-card">', unsafe_allow_html=True)
+    st.sidebar.markdown('<div class="sidebar-card-title">Input Model</div>', unsafe_allow_html=True)
+    gateway_mode = st.sidebar.radio(
+        "Input Model",
+        ["Seed Data", "Natural Language", "Both"],
+        key="gateway_input_mode",
+        label_visibility="collapsed",
+    )
+    nl_disabled = gateway_mode == "Seed Data"
+    st.sidebar.text_area(
+        "Natural Language Prompt",
+        key="gateway_nl_prompt",
+        height=110,
+        disabled=nl_disabled,
+        help="Architect uses this prompt directly in Natural Language mode.",
+    )
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
+
+    st.sidebar.markdown('<div class="sidebar-card">', unsafe_allow_html=True)
     st.sidebar.markdown(
         '<div class="sidebar-card-title">Upload CSV / Excel / JSON files</div>',
         unsafe_allow_html=True,
@@ -1736,29 +1754,13 @@ def render_sidebar() -> None:
         type=["csv", "xlsx", "xls", "json"],
         accept_multiple_files=True,
         label_visibility="collapsed",
+        disabled=(gateway_mode == "Natural Language"),
         key=f"sidebar_uploads_{st.session_state.upload_widget_nonce}",
     )
     st.sidebar.markdown(
         '<div class="sidebar-helper">200MB per file • CSV, XLSX, XLS, JSON</div>',
         unsafe_allow_html=True,
     )
-    st.sidebar.markdown("</div>", unsafe_allow_html=True)
-
-    st.sidebar.markdown('<div class="sidebar-card">', unsafe_allow_html=True)
-    st.sidebar.markdown('<div class="sidebar-card-title">Gateway Input Mode</div>', unsafe_allow_html=True)
-    gateway_mode = st.sidebar.radio(
-        "Gateway Input Mode",
-        ["Seed Data", "Natural Language", "Both"],
-        key="gateway_input_mode",
-        label_visibility="collapsed",
-    )
-    if gateway_mode in ("Natural Language", "Both"):
-        st.sidebar.text_area(
-            "Natural Language Prompt",
-            key="gateway_nl_prompt",
-            height=110,
-            help="Architect uses this prompt directly in Natural Language mode.",
-        )
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
     if st.sidebar.button("✨ Generate via AI Astra", key="sidebar_jump_ai_astra", type="primary", use_container_width=True):
