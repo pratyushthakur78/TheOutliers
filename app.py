@@ -1861,7 +1861,7 @@ def render_sidebar() -> None:
 
     if st.sidebar.button("✨ Generate via AI Astra", key="sidebar_jump_ai_astra", type="primary", use_container_width=True):
         st.session_state.jump_to_architect = True
-        st.session_state.gateway_input_mode = "Natural Language"
+        st.session_state["_pending_gateway_input_mode"] = "Natural Language"
         st.rerun()
 
     if uploads:
@@ -4073,6 +4073,9 @@ def main() -> None:
     )
     inject_theme()
     init_state()
+    pending_gateway_mode = st.session_state.pop("_pending_gateway_input_mode", None)
+    if pending_gateway_mode in ("Seed Data", "Natural Language", "Both"):
+        st.session_state.gateway_input_mode = pending_gateway_mode
     if st.session_state.get("_snapshot_restored"):
         st.caption("Session recovered after idle (within last 15 minutes).")
         st.session_state["_snapshot_restored"] = False
