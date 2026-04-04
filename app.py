@@ -1546,23 +1546,41 @@ def generate_tabular_from_prompt(user_prompt: str, target_rows: int) -> pd.DataF
         "Ensure coherent schema, realistic distributions, and valid cross-column consistency."
     )
 
+    request_timeout = int(os.getenv("AZURE_REQUEST_TIMEOUT_SECONDS", "75"))
+    request_retries = int(os.getenv("AZURE_REQUEST_RETRIES", "3"))
+
     def _post_json(url: str, body: dict[str, Any]) -> dict[str, Any]:
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json", "api-key": api_key},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            raw = ""
+        last_err: Exception | None = None
+        for attempt in range(max(1, request_retries)):
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json", "api-key": api_key},
+                method="POST",
+            )
             try:
-                raw = e.read().decode("utf-8")
-            except Exception:
-                raw = str(e)
-            raise RuntimeError(f"Azure API HTTP {e.code}: {raw}") from e
+                with urllib.request.urlopen(req, timeout=request_timeout) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                raw = ""
+                try:
+                    raw = e.read().decode("utf-8")
+                except Exception:
+                    raw = str(e)
+                # Retry only transient server-side errors.
+                if e.code in (408, 429, 500, 502, 503, 504) and attempt < (request_retries - 1):
+                    time.sleep(0.8 * (attempt + 1))
+                    continue
+                raise RuntimeError(f"Azure API HTTP {e.code}: {raw}") from e
+            except Exception as e:
+                last_err = e
+                if attempt < (request_retries - 1):
+                    time.sleep(0.8 * (attempt + 1))
+                    continue
+                break
+        raise RuntimeError(
+            f"Azure request failed after {request_retries} attempt(s). Last error: {last_err}"
+        )
 
     def _text_from_responses_payload(payload: dict[str, Any]) -> str:
         txt = payload.get("output_text", "")
@@ -3576,7 +3594,6 @@ def render_critic_tab() -> None:
                 st.session_state["critic_guardrails_report"] = guardrails_report
                 st.session_state["critic_score"] = critic_score
                 st.session_state["critic_threshold"] = critic_threshold
-                st.session_state["critic_profile"] = critic_profile
             except Exception as exc:
                 st.error(f"Critic failed: {exc}")
 
@@ -3926,8 +3943,6 @@ def render_model_validation_sandbox_tab() -> None:
         else:
             rows = [
                 {"Metric": "KS", "Train": m_tr.get("ks"), "Test": m_te.get("ks"), "Synthetic": m_sy.get("ks")},
-                {"Metric": "Gini", "Train": m_tr.get("gini"), "Test": m_te.get("gini"), "Synthetic": m_sy.get("gini")},
-                {"Metric": "ROC AUC", "Train": m_tr.get("roc_auc"), "Test": m_te.get("roc_auc"), "Synthetic": m_sy.get("roc_auc")},
                 {"Metric": "Precision", "Train": m_tr.get("precision"), "Test": m_te.get("precision"), "Synthetic": m_sy.get("precision")},
                 {"Metric": "Recall", "Train": m_tr.get("recall"), "Test": m_te.get("recall"), "Synthetic": m_sy.get("recall")},
                 {"Metric": "Accuracy", "Train": m_tr.get("accuracy"), "Test": m_te.get("accuracy"), "Synthetic": m_sy.get("accuracy")},
