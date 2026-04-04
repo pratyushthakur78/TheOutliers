@@ -1592,6 +1592,8 @@ def init_state() -> None:
         st.session_state.jump_to_architect = False
     if "architect_input_mode" not in st.session_state:
         st.session_state.architect_input_mode = "Seed Data"
+    if "gateway_input_mode" not in st.session_state:
+        st.session_state.gateway_input_mode = "Both"
     if "jump_to_lens" not in st.session_state:
         st.session_state.jump_to_lens = False
     if "architect_generated_df" not in st.session_state:
@@ -1687,6 +1689,7 @@ def clear_loaded_app_state() -> None:
     st.session_state.jump_to_ai_astra = False
     st.session_state.jump_to_architect = False
     st.session_state.architect_input_mode = "Seed Data"
+    st.session_state.gateway_input_mode = "Both"
     st.session_state.upload_widget_nonce = int(st.session_state.get("upload_widget_nonce", 0)) + 1
     delete_session_snapshot_file()
 
@@ -1723,8 +1726,19 @@ def render_sidebar() -> None:
     )
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
+    st.sidebar.markdown('<div class="sidebar-card">', unsafe_allow_html=True)
+    st.sidebar.markdown('<div class="sidebar-card-title">Gateway Input Mode</div>', unsafe_allow_html=True)
+    st.sidebar.radio(
+        "Gateway Input Mode",
+        ["Seed Data", "Natural Language", "Both"],
+        key="gateway_input_mode",
+        label_visibility="collapsed",
+    )
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
+
     if st.sidebar.button("✨ Generate via AI Astra", key="sidebar_jump_ai_astra", type="primary", use_container_width=True):
         st.session_state.jump_to_architect = True
+        st.session_state.gateway_input_mode = "Natural Language"
         st.session_state.architect_input_mode = "Natural Language"
         st.rerun()
 
@@ -3489,17 +3503,29 @@ def render_model_validation_sandbox_tab() -> None:
 def render_architect_unified_tab() -> None:
     st.markdown('<div class="block-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Architect</div>', unsafe_allow_html=True)
+    gateway_mode = st.session_state.get("gateway_input_mode", "Both")
     has_gateway_seed = bool(st.session_state.get("data_registry"))
-    if (not has_gateway_seed) and st.session_state.get("architect_input_mode") == "Seed Data":
-        st.session_state.architect_input_mode = "Natural Language"
-    mode = st.radio(
-        "Type of input",
-        ["Seed Data", "Natural Language"],
-        horizontal=True,
-        key="architect_input_mode",
-    )
+
+    if gateway_mode == "Seed Data":
+        mode = "Seed Data"
+    elif gateway_mode == "Natural Language":
+        mode = "Natural Language"
+    else:
+        if (not has_gateway_seed) and st.session_state.get("architect_input_mode") == "Seed Data":
+            st.session_state.architect_input_mode = "Natural Language"
+        mode = st.radio(
+            "Type of input",
+            ["Seed Data", "Natural Language"],
+            horizontal=True,
+            key="architect_input_mode",
+        )
+
+    st.caption(f"Gateway mode: **{gateway_mode}**")
     st.markdown("</div>", unsafe_allow_html=True)
     if mode == "Seed Data":
+        if not has_gateway_seed and (st.session_state.get("joined_df") is None or st.session_state.get("joined_df").empty):
+            st.info("Gateway is set to Seed Data, but no seed dataset is uploaded yet.")
+            return
         render_synthetic_generator_tab()
     else:
         render_data_bot_tab()
