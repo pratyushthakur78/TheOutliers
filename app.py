@@ -23,6 +23,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from modules import data_processing as dp
+from modules import synthetic_engine as se
 
 try:
     from sdv.metadata import SingleTableMetadata
@@ -1719,7 +1721,7 @@ def render_sidebar() -> None:
 
     if st.sidebar.button("✨ Generate via AI Astra", key="sidebar_jump_ai_astra", type="primary", use_container_width=True):
         st.session_state.jump_to_architect = True
-        st.session_state.architect_input_mode = "Natural Language"
+        st.session_state.architect_input_mode = "AI Astra"
         st.rerun()
 
     if uploads:
@@ -1729,7 +1731,7 @@ def render_sidebar() -> None:
             if signature in st.session_state.file_signatures:
                 continue
             try:
-                parsed_tables = parse_uploaded_file(file_obj.name, raw)
+                parsed_tables = dp.parse_uploaded_file(file_obj.name, raw)
                 st.session_state.data_registry.update(parsed_tables)
                 st.session_state.file_signatures.add(signature)
                 st.session_state.jump_to_lens = True
@@ -2229,7 +2231,7 @@ def render_synthetic_generator_tab() -> None:
         up = st.file_uploader("Upload seed file (CSV/JSON)", type=["csv", "json"], key="syn_seed_upload")
         if up is not None:
             try:
-                seed_df = parse_seed_upload(up)
+                seed_df = dp.parse_seed_upload(up)
                 st.success(f"Seed file loaded: {up.name} ({len(seed_df):,} rows)")
             except Exception as exc:
                 st.error(str(exc))
@@ -2240,7 +2242,7 @@ def render_synthetic_generator_tab() -> None:
         return
 
     st.markdown("### Privacy & masking - seed lens")
-    pii_df = detect_pii_columns(seed_df)
+    pii_df = dp.detect_pii_columns(seed_df)
     pii_candidates = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
     with st.expander("Privacy & masking - seed lens", expanded=False):
         selected_pii = st.multiselect(
@@ -2271,7 +2273,7 @@ def render_synthetic_generator_tab() -> None:
                 key="syn_privacy_noise",
             )
         )
-        private_preview = apply_privacy_transform(
+        private_preview = se.apply_privacy_transform(
             seed_df,
             tuple(selected_pii),
             scrub_mode,
@@ -2284,7 +2286,7 @@ def render_synthetic_generator_tab() -> None:
     scrub_mode = st.session_state.get("syn_privacy_mode", "mask")
     k_anon = int(st.session_state.get("syn_privacy_k", 3))
     noise_level = float(st.session_state.get("syn_privacy_noise", 0.02))
-    private_df = apply_privacy_transform(
+    private_df = se.apply_privacy_transform(
         seed_df,
         tuple(selected_pii),
         scrub_mode,
@@ -2417,14 +2419,14 @@ def render_synthetic_generator_tab() -> None:
                     np.random.seed(42 + attempt)
                     if model_choice == "CTGAN (GAN)":
                         if SDV_AVAILABLE:
-                            candidate = generate_sdv_synthetic(private_df, target_rows, "CTGAN")
+                            candidate = se.generate_sdv_synthetic(private_df, target_rows, "CTGAN")
                         else:
-                            candidate = generate_bootstrap_synthetic(private_df, target_rows)
+                            candidate = se.generate_bootstrap_synthetic(private_df, target_rows)
                     elif model_choice == "TVAE":
                         if SDV_AVAILABLE:
-                            candidate = generate_sdv_synthetic(private_df, target_rows, "TVAE")
+                            candidate = se.generate_sdv_synthetic(private_df, target_rows, "TVAE")
                         else:
-                            candidate = generate_bootstrap_synthetic(private_df, target_rows)
+                            candidate = se.generate_bootstrap_synthetic(private_df, target_rows)
                     elif model_choice == "AI Astra":
                         candidate = generate_with_azure_llm(
                             private_df,
@@ -2452,7 +2454,7 @@ def render_synthetic_generator_tab() -> None:
                             tiled = pd.concat([private_df] * reps, ignore_index=True)
                             candidate = tiled.sample(frac=1.0, random_state=42 + attempt).head(target_rows).reset_index(drop=True)
                     elif model_choice == "Synthetic - perturb":
-                        candidate = generate_bootstrap_synthetic(private_df, target_rows)
+                        candidate = se.generate_bootstrap_synthetic(private_df, target_rows)
                     elif model_choice == "Synthetic - independent":
                         synth_cols: dict[str, Any] = {}
                         for col in private_df.columns:
@@ -2470,20 +2472,20 @@ def render_synthetic_generator_tab() -> None:
                         candidate = pd.DataFrame(synth_cols)
                     elif model_choice == "GAN (Architect style)":
                         if SDV_AVAILABLE:
-                            candidate = generate_sdv_synthetic(private_df, target_rows, "CTGAN")
+                            candidate = se.generate_sdv_synthetic(private_df, target_rows, "CTGAN")
                         else:
-                            candidate = generate_bootstrap_synthetic(private_df, target_rows)
+                            candidate = se.generate_bootstrap_synthetic(private_df, target_rows)
                     elif model_choice == "Diffusion (Architect style)":
-                        candidate = generate_bootstrap_synthetic(private_df, target_rows)
+                        candidate = se.generate_bootstrap_synthetic(private_df, target_rows)
                     else:
-                        candidate = generate_bootstrap_synthetic(private_df, target_rows)
+                        candidate = se.generate_bootstrap_synthetic(private_df, target_rows)
 
                     if profile_mode == "Normalized (seed-aligned)":
-                        candidate = align_synthetic_to_seed_distribution(private_df, candidate)
+                        candidate = se.align_synthetic_to_seed_distribution(private_df, candidate)
                     else:
-                        candidate = add_skew_for_stress_testing(candidate, skew_strength)
+                        candidate = se.add_skew_for_stress_testing(candidate, skew_strength)
 
-                    js_try, utility_try = compute_fidelity_metrics(private_df, candidate)
+                    js_try, utility_try = se.compute_fidelity_metrics(private_df, candidate)
                     score_try = _synthetic_fidelity_score(js_try, utility_try, critic_profile)
                     if score_try > best_score:
                         best_score = score_try
@@ -2496,7 +2498,7 @@ def render_synthetic_generator_tab() -> None:
                 if best_df is None:
                     raise RuntimeError("No synthetic output generated.")
                 synthetic_df = best_df
-                guardrails_report = validate_synthetic_dataset(private_df, synthetic_df, [])
+                guardrails_report = se.validate_synthetic_dataset(private_df, synthetic_df, [])
                 st.session_state["syn_last_score"] = best_score
                 st.session_state["syn_last_attempts"] = attempts_used
                 st.session_state["syn_last_profile"] = critic_profile
@@ -2523,7 +2525,7 @@ def render_synthetic_generator_tab() -> None:
         utility_df = st.session_state.get("syn_last_utility_df")
         guardrails_report = st.session_state.get("syn_last_guardrails") or {}
         if not isinstance(js_df, pd.DataFrame) or not isinstance(utility_df, pd.DataFrame):
-            js_df, utility_df = compute_fidelity_metrics(private_df, synthetic_df)
+            js_df, utility_df = se.compute_fidelity_metrics(private_df, synthetic_df)
         latest_profile = st.session_state.get("syn_last_profile", "standard")
         latest_score = float(st.session_state.get("syn_last_score", _synthetic_fidelity_score(js_df, utility_df, latest_profile)))
         profile_meta = SYN_CRITIC_PROFILES.get(latest_profile, SYN_CRITIC_PROFILES["standard"])
@@ -2538,8 +2540,8 @@ def render_synthetic_generator_tab() -> None:
                 f"(threshold {profile_meta['pass_threshold']}/5)"
             )
         st.markdown("**Guardrails**")
-        render_guardrails_table(guardrails_report)
-        render_seed_synth_corr(private_df, synthetic_df, "syn_gen_corr")
+        se.render_guardrails_table(guardrails_report)
+        se.render_seed_synth_corr(private_df, synthetic_df, "syn_gen_corr")
         s1, s2 = st.columns(2)
         with s1:
             st.markdown("**JS Divergence (numeric columns)**")
@@ -2580,7 +2582,7 @@ def render_synthetic_generator_tab() -> None:
             st.plotly_chart(fig_dtype, use_container_width=True, key="syn_critic_dtype")
 
         st.markdown("**Column statistics (synthetic)**")
-        stats_df = build_column_statistics(synthetic_df)
+        stats_df = dp.build_column_statistics(synthetic_df)
         st.dataframe(stats_df, use_container_width=True, height=340)
 
         st.markdown("**Preview**")
@@ -2807,7 +2809,7 @@ def render_data_bot_tab() -> None:
 
         st.markdown('<div class="block-card">', unsafe_allow_html=True)
         st.markdown('<div class="minor-title">Column Statistics</div>', unsafe_allow_html=True)
-        stats_df = build_column_statistics(bot_df)
+        stats_df = dp.build_column_statistics(bot_df)
         numeric_cols_stats = ["mean", "min", "max", "5%", "10%", "20%", "30%", "50%", "70%", "80%", "90%", "95%"]
         for c in numeric_cols_stats:
             if c in stats_df.columns:
@@ -2957,11 +2959,11 @@ def render_lens_tab() -> None:
             st.info("No categorical columns found.")
 
     with st.expander("Full column statistics", expanded=False):
-        stats_df = build_column_statistics(df)
+        stats_df = dp.build_column_statistics(df)
         st.dataframe(stats_df, use_container_width=True, height=420)
 
     st.markdown("**Potentially sensitive columns**")
-    pii_df = detect_pii_columns(df)
+    pii_df = dp.detect_pii_columns(df)
     pii_cols = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
     if not pii_cols:
         st.caption(
@@ -2995,7 +2997,7 @@ def render_lens_tab() -> None:
     with d2:
         st.download_button(
             "Download Lens insights (Excel)",
-            data=export_dataframe_to_excel_bytes(df),
+            data=dp.export_dataframe_to_excel_bytes(df),
             file_name=f"{export_base}_lens_insights.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
@@ -3023,7 +3025,7 @@ def render_architect_tab() -> None:
     seed_label = st.selectbox("Seed source", list(seed_only.keys()), key="architect_seed_source")
     seed_df = seed_only[seed_label]
 
-    pii_df = detect_pii_columns(seed_df)
+    pii_df = dp.detect_pii_columns(seed_df)
     default_pii = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
     st.markdown('<div class="minor-title">Privacy & Masking</div>', unsafe_allow_html=True)
     p1, p2, p3 = st.columns(3)
@@ -3036,7 +3038,7 @@ def render_architect_tab() -> None:
     scrub_mode = p1.selectbox("PII mode", ["mask", "drop"], key="architect_scrub_mode")
     k_anon = int(p2.number_input("k-anonymity", min_value=1, max_value=50, value=3, step=1, key="architect_k"))
     noise_level = float(p3.slider("Numeric noise", 0.0, 0.5, 0.02, 0.01, key="architect_noise"))
-    private_df = apply_privacy_transform(seed_df, tuple(selected_pii), scrub_mode, k_anon, noise_level)
+    private_df = se.apply_privacy_transform(seed_df, tuple(selected_pii), scrub_mode, k_anon, noise_level)
 
     st.markdown('<div class="minor-title">The Foundry</div>', unsafe_allow_html=True)
     g1, g2, g3 = st.columns(3)
@@ -3070,15 +3072,15 @@ def render_architect_tab() -> None:
     if st.button("Run Architect", type="primary", use_container_width=True, key="architect_run"):
         try:
             if model_choice == "CTGAN (GAN)":
-                out = generate_sdv_synthetic(private_df, target_rows, "CTGAN") if SDV_AVAILABLE else generate_bootstrap_synthetic(private_df, target_rows)
+                out = se.generate_sdv_synthetic(private_df, target_rows, "CTGAN") if SDV_AVAILABLE else se.generate_bootstrap_synthetic(private_df, target_rows)
             elif model_choice == "TVAE":
-                out = generate_sdv_synthetic(private_df, target_rows, "TVAE") if SDV_AVAILABLE else generate_bootstrap_synthetic(private_df, target_rows)
+                out = se.generate_sdv_synthetic(private_df, target_rows, "TVAE") if SDV_AVAILABLE else se.generate_bootstrap_synthetic(private_df, target_rows)
             elif model_choice == "AI Astra":
                 out = generate_with_azure_llm(private_df, target_rows, custom_instruction=user_instruction)
             else:
-                out = generate_bootstrap_synthetic(private_df, target_rows)
+                out = se.generate_bootstrap_synthetic(private_df, target_rows)
 
-            out = align_synthetic_to_seed_distribution(private_df, out)
+            out = se.align_synthetic_to_seed_distribution(private_df, out)
             st.session_state.architect_generated_df = out
             st.session_state.architect_seed_label = seed_label
             st.success(f"Architect generated {len(out):,} rows.")
@@ -3088,7 +3090,7 @@ def render_architect_tab() -> None:
     out = st.session_state.get("architect_generated_df")
     if out is not None and not out.empty and st.session_state.get("architect_seed_label") == seed_label:
         st.markdown('<div class="minor-title">Latest Generation</div>', unsafe_allow_html=True)
-        js_df, utility_df = compute_fidelity_metrics(private_df, out)
+        js_df, utility_df = se.compute_fidelity_metrics(private_df, out)
         f1, f2 = st.columns(2)
         with f1:
             st.markdown("**JS Divergence (numeric)**")
@@ -3130,8 +3132,8 @@ def render_critic_tab() -> None:
         else:
             try:
                 synth_df = pd.read_csv(io.BytesIO(up.getvalue()), low_memory=False)
-                js_df, utility_df = compute_fidelity_metrics(seed_df, synth_df)
-                guardrails_report = validate_synthetic_dataset(seed_df, synth_df, [])
+                js_df, utility_df = se.compute_fidelity_metrics(seed_df, synth_df)
+                guardrails_report = se.validate_synthetic_dataset(seed_df, synth_df, [])
                 st.session_state.critic_synth_df = synth_df
                 st.session_state.critic_js_df = js_df
                 st.session_state.critic_utility_df = utility_df
@@ -3153,8 +3155,8 @@ def render_critic_tab() -> None:
             st.warning(f"Critic verdict: REVIEW | avg JS={avg_js:.4f}" + (f" | corr similarity={corr_val:.3f}" if not np.isnan(corr_val) else ""))
 
         st.markdown("**Guardrails**")
-        render_guardrails_table(guardrails_report)
-        render_seed_synth_corr(seed_df, synth_df, "critic_corr")
+        se.render_guardrails_table(guardrails_report)
+        se.render_seed_synth_corr(seed_df, synth_df, "critic_corr")
 
         c1, c2 = st.columns(2)
         with c1:
@@ -3194,7 +3196,7 @@ def render_critic_tab() -> None:
             st.plotly_chart(fig_dtype, use_container_width=True, key="critic_dtype")
 
         st.markdown("**Column statistics (synthetic)**")
-        stats_df = build_column_statistics(synth_df)
+        stats_df = dp.build_column_statistics(synth_df)
         st.dataframe(stats_df, use_container_width=True, height=340)
 
         st.markdown("**Preview**")
@@ -3488,14 +3490,16 @@ def render_architect_unified_tab() -> None:
     st.markdown('<div class="section-title">Architect</div>', unsafe_allow_html=True)
     mode = st.radio(
         "Type of input",
-        ["Seed Data", "Natural Language"],
+        ["Seed Data", "Natural Language", "AI Astra"],
         horizontal=True,
         key="architect_input_mode",
     )
     st.markdown("</div>", unsafe_allow_html=True)
     if mode == "Seed Data":
         render_synthetic_generator_tab()
-    else:
+    elif mode == "Natural Language":
+        render_data_bot_tab()
+    else:  # AI Astra
         render_data_bot_tab()
 
 
