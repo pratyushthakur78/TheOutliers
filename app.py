@@ -50,6 +50,7 @@ HELP_ME_PATH = os.path.join(HACKATHON_DIR, "HELP_ME.md")
 DEMO_FILES_DIR = os.path.join(REPO_ROOT, "demo_files")
 SESSION_SNAPSHOT_TTL_SECONDS = 900
 ENABLE_SESSION_SNAPSHOT = False
+MAX_GATEWAY_FILES = 10
 
 BRAND_NAME = "The Outliers"
 ACCENT = "#FFB347"
@@ -540,7 +541,7 @@ def parse_uploaded_file(file_name: str, file_bytes: bytes) -> dict[str, pd.DataF
     raise ValueError("Unsupported file format. Please upload CSV, Excel, or JSON files.")
 
 
-def load_repo_demo_files() -> dict[str, pd.DataFrame]:
+def load_repo_demo_files(max_files: int = MAX_GATEWAY_FILES) -> dict[str, pd.DataFrame]:
     """Load packaged demo CSV files from repository demo_files folder."""
     if not os.path.isdir(DEMO_FILES_DIR):
         raise FileNotFoundError(f"Demo folder not found in repository: {DEMO_FILES_DIR}")
@@ -552,6 +553,7 @@ def load_repo_demo_files() -> dict[str, pd.DataFrame]:
     )
     if not demo_files:
         raise FileNotFoundError("No demo CSV files found in repository demo_files folder.")
+    demo_files = demo_files[:max(1, int(max_files))]
 
     loaded: dict[str, pd.DataFrame] = {}
     for name in demo_files:
@@ -1700,7 +1702,7 @@ def init_state() -> None:
     if "jump_to_architect" not in st.session_state:
         st.session_state.jump_to_architect = False
     if "gateway_input_mode" not in st.session_state:
-        st.session_state.gateway_input_mode = "Both"
+        st.session_state.gateway_input_mode = "Seed Data"
     if "gateway_nl_prompt" not in st.session_state:
         st.session_state.gateway_nl_prompt = (
             "Generate credit-risk DPD data with customer_id, loan_id, dpd_bucket, "
@@ -1803,7 +1805,7 @@ def clear_loaded_app_state() -> None:
     st.session_state.jump_to_lens = False
     st.session_state.jump_to_ai_astra = False
     st.session_state.jump_to_architect = False
-    st.session_state.gateway_input_mode = "Both"
+    st.session_state.gateway_input_mode = "Seed Data"
     st.session_state.gateway_nl_prompt = (
         "Generate credit-risk DPD data with customer_id, loan_id, dpd_bucket, "
         "exposure, region, segment, delinquency_date."
@@ -1880,7 +1882,7 @@ def render_sidebar() -> None:
     )
     if load_demo:
         try:
-            loaded = load_repo_demo_files()
+            loaded = load_repo_demo_files(MAX_GATEWAY_FILES)
             first_key = None
             for demo_name, demo_df in loaded.items():
                 st.session_state.data_registry[demo_name] = demo_df
@@ -1896,7 +1898,9 @@ def render_sidebar() -> None:
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
     if uploads:
-        for file_obj in uploads:
+        if len(uploads) > MAX_GATEWAY_FILES:
+            st.sidebar.warning(f"You can upload up to {MAX_GATEWAY_FILES} files at a time. Processing first {MAX_GATEWAY_FILES}.")
+        for file_obj in uploads[:MAX_GATEWAY_FILES]:
             raw = file_obj.getvalue()
             signature = f"{file_obj.name}:{file_obj.size}:{hash(raw)}"
             if signature in st.session_state.file_signatures:
@@ -2437,32 +2441,14 @@ def render_synthetic_generator_tab() -> None:
             st.caption("Sensitive columns from Lens/PII scan: " + ", ".join(pii_candidates))
         else:
             st.caption("No sensitive columns detected for this dataset.")
-        p1, p2, p3 = st.columns(3)
+        p1 = st.columns(1)[0]
         scrub_mode = p1.selectbox(
             "Masking method",
             ["Drop", "Hash / token (deterministic)", "Redact ([REDACTED])"],
             key="syn_privacy_mode",
         )
-        k_anon = int(
-            p2.number_input(
-                "k-anonymity",
-                min_value=1,
-                max_value=50,
-                value=3,
-                step=1,
-                key="syn_privacy_k",
-            )
-        )
-        noise_level = float(
-            p3.slider(
-                "Numeric noise",
-                0.0,
-                0.5,
-                0.02,
-                0.01,
-                key="syn_privacy_noise",
-            )
-        )
+        k_anon = 1
+        noise_level = 0.0
         private_preview = se.apply_privacy_transform(
             seed_df,
             tuple(selected_pii),
@@ -2475,8 +2461,8 @@ def render_synthetic_generator_tab() -> None:
     selected_pk = [c for c in st.session_state.get("syn_primary_keys", []) if c in seed_df.columns]
     selected_pii = st.session_state.get("syn_privacy_cols", pii_candidates)
     scrub_mode = st.session_state.get("syn_privacy_mode", "Redact ([REDACTED])")
-    k_anon = int(st.session_state.get("syn_privacy_k", 3))
-    noise_level = float(st.session_state.get("syn_privacy_noise", 0.02))
+    k_anon = 1
+    noise_level = 0.0
     private_df = se.apply_privacy_transform(
         seed_df,
         tuple(selected_pii),
@@ -3183,14 +3169,14 @@ def render_seed_plus_prompt_tab() -> None:
             st.caption("Sensitive columns from Lens/PII scan: " + ", ".join(pii_candidates))
         else:
             st.caption("No sensitive columns detected for this dataset.")
-        p1, p2, p3 = st.columns(3)
+        p1 = st.columns(1)[0]
         scrub_mode = p1.selectbox(
             "Masking method",
             ["Drop", "Hash / token (deterministic)", "Redact ([REDACTED])"],
             key="both_privacy_mode",
         )
-        k_anon = int(p2.number_input("k-anonymity", min_value=1, max_value=50, value=3, step=1, key="both_privacy_k"))
-        noise_level = float(p3.slider("Numeric noise", 0.0, 0.5, 0.02, 0.01, key="both_privacy_noise"))
+        k_anon = 1
+        noise_level = 0.0
         private_preview = se.apply_privacy_transform(seed_df, tuple(selected_pii), scrub_mode, k_anon, noise_level)
         st.caption("Preview (masked seed lens)")
         st.dataframe(private_preview.head(8), use_container_width=True, height=210)
@@ -3198,8 +3184,8 @@ def render_seed_plus_prompt_tab() -> None:
     selected_pk = [c for c in st.session_state.get("both_primary_keys", []) if c in seed_df.columns]
     selected_pii = st.session_state.get("both_privacy_cols", pii_candidates)
     scrub_mode = st.session_state.get("both_privacy_mode", "Redact ([REDACTED])")
-    k_anon = int(st.session_state.get("both_privacy_k", 3))
-    noise_level = float(st.session_state.get("both_privacy_noise", 0.02))
+    k_anon = 1
+    noise_level = 0.0
     private_df = se.apply_privacy_transform(seed_df, tuple(selected_pii), scrub_mode, k_anon, noise_level)
     if selected_pk:
         private_df = private_df.drop(columns=[c for c in selected_pk if c in private_df.columns], errors="ignore")
@@ -3519,16 +3505,20 @@ def render_architect_tab() -> None:
     pii_df = dp.detect_pii_columns(seed_df)
     default_pii = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
     st.markdown('<div class="minor-title">Privacy & Masking</div>', unsafe_allow_html=True)
-    p1, p2, p3 = st.columns(3)
+    p1 = st.columns(1)[0]
     selected_pii = st.multiselect(
         "Columns to mask/drop",
         options=list(seed_df.columns),
         default=default_pii,
         key="architect_pii_cols",
     )
-    scrub_mode = p1.selectbox("PII mode", ["mask", "drop"], key="architect_scrub_mode")
-    k_anon = int(p2.number_input("k-anonymity", min_value=1, max_value=50, value=3, step=1, key="architect_k"))
-    noise_level = float(p3.slider("Numeric noise", 0.0, 0.5, 0.02, 0.01, key="architect_noise"))
+    scrub_mode = p1.selectbox(
+        "Masking method",
+        ["Drop", "Hash / token (deterministic)", "Redact ([REDACTED])"],
+        key="architect_scrub_mode",
+    )
+    k_anon = 1
+    noise_level = 0.0
     private_df = se.apply_privacy_transform(seed_df, tuple(selected_pii), scrub_mode, k_anon, noise_level)
 
     st.markdown('<div class="minor-title">The Foundry</div>', unsafe_allow_html=True)
