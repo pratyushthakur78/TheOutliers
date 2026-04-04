@@ -1738,6 +1738,9 @@ def render_sidebar() -> None:
                 parsed_tables = dp.parse_uploaded_file(file_obj.name, raw)
                 st.session_state.data_registry.update(parsed_tables)
                 st.session_state.file_signatures.add(signature)
+                if parsed_tables:
+                    first_loaded = next(iter(parsed_tables.keys()))
+                    st.session_state.lens_source = f"Registry::{first_loaded}"
                 st.session_state.jump_to_lens = True
                 st.toast(f"Loaded: {file_obj.name}")
             except Exception as exc:
@@ -2217,28 +2220,22 @@ def render_synthetic_generator_tab() -> None:
     )
 
     # Seed data source
-    source_options = []
+    source_options = [f"Registry::{k}" for k in st.session_state.data_registry.keys()]
     if st.session_state.joined_df is not None and not st.session_state.joined_df.empty:
-        source_options.append("Joined dataset")
-    source_options.extend([f"Registry::{k}" for k in st.session_state.data_registry.keys()])
-    source_options.append("Upload CSV/JSON")
+        source_options.insert(0, "Joined dataset")
+    if not source_options:
+        st.info("Upload seed data in Gateway (left pane) to run Architect with Seed Data.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
 
     seed_source = st.selectbox("Seed source", source_options, key="syn_seed_source")
     seed_df: pd.DataFrame | None = None
 
     if seed_source == "Joined dataset":
         seed_df = st.session_state.joined_df.copy()
-    elif seed_source.startswith("Registry::"):
+    else:
         table_name = seed_source.split("Registry::", 1)[1]
         seed_df = st.session_state.data_registry.get(table_name)
-    else:
-        up = st.file_uploader("Upload seed file (CSV/JSON)", type=["csv", "json"], key="syn_seed_upload")
-        if up is not None:
-            try:
-                seed_df = dp.parse_seed_upload(up)
-                st.success(f"Seed file loaded: {up.name} ({len(seed_df):,} rows)")
-            except Exception as exc:
-                st.error(str(exc))
 
     if seed_df is None or seed_df.empty:
         st.info("Choose a seed source to start synthetic generation.")
@@ -3492,6 +3489,9 @@ def render_model_validation_sandbox_tab() -> None:
 def render_architect_unified_tab() -> None:
     st.markdown('<div class="block-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Architect</div>', unsafe_allow_html=True)
+    has_gateway_seed = bool(st.session_state.get("data_registry"))
+    if (not has_gateway_seed) and st.session_state.get("architect_input_mode") == "Seed Data":
+        st.session_state.architect_input_mode = "Natural Language"
     mode = st.radio(
         "Type of input",
         ["Seed Data", "Natural Language"],
@@ -3590,6 +3590,9 @@ def main() -> None:
             <div style="font-size: 2rem; font-weight: 800; letter-spacing: 0.2px; color: #1f2937;">
                 Synthetic Data Foundry
                 <span style="color: #FFB347;">(Core Engine)</span>
+            </div>
+            <div style="margin-top: 0.05rem; color: #9ca3af; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;">
+                Input · Core Engine · Output
             </div>
             <div style="margin-top: 0.25rem; color: #6b7280; font-size: 0.98rem;">
                 End-to-end: profile your seed, generate synthetic data with the Architect, auto-validate with the critic, and export.
