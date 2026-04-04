@@ -158,8 +158,19 @@ def inject_theme() -> None:
     st.markdown(
         f"""
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-  html, body, [class*="css"] {{ font-family: 'Inter', system-ui, sans-serif !important; }}
+  @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Ranade:wght@400;500;600;700;800&display=swap');
+  html, body, [class*="css"] {{ font-family: 'Rubik', system-ui, sans-serif !important; }}
+  h1, h2, h3, h4, h5, h6,
+  [data-testid="stMarkdownContainer"] h1,
+  [data-testid="stMarkdownContainer"] h2,
+  [data-testid="stMarkdownContainer"] h3,
+  [data-testid="stMarkdownContainer"] h4,
+  [data-testid="stMarkdownContainer"] h5,
+  [data-testid="stMarkdownContainer"] h6,
+  .section-title, .minor-title, .sidebar-kicker, .sidebar-card-title, .arch-main-title, .arch-subtitle {{
+    font-family: 'Ranade', 'Rubik', system-ui, sans-serif !important;
+  }}
   p, li, label, [data-testid="stMarkdownContainer"] {{ font-size: 0.92rem; }}
   .stApp {{ background: #f5f7fb !important; color: #1f2937; }}
   [data-testid="stSidebar"] {{
