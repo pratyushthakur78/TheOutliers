@@ -1,0 +1,11 @@
+customer_id,region,segment,risk_tier,annual_income,tenure_months
+100001,North,Retail,Low,720000,18
+100002,West,SME,Medium,940000,27
+100003,South,Retail,Low,610000,12
+100004,East,Corporate,High,1820000,49
+100005,North,SME,Medium,880000,31
+100006,West,Retail,Low,560000,9
+100007,East,Retail,Medium,790000,22
+100008,South,SME,High,1250000,36
+100009,North,Corporate,Medium,1540000,41
+100010,West,Retail,Low,670000,15

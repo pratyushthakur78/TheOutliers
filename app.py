@@ -43,9 +43,11 @@ else:
     DEFAULT_HACKATHON_DIR = "/home/site/wwwroot"
 
 HACKATHON_DIR = os.getenv("HACKATHON_DIR", DEFAULT_HACKATHON_DIR)
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 NOTEBOOK_OUTPUT_PATH = os.path.join(HACKATHON_DIR, "data_analysis.ipynb")
 SESSION_SNAPSHOT_PATH = os.path.join(HACKATHON_DIR, ".streamlit_session_snapshot.pkl")
 HELP_ME_PATH = os.path.join(HACKATHON_DIR, "HELP_ME.md")
+DEMO_FILES_DIR = os.path.join(REPO_ROOT, "demo_files")
 SESSION_SNAPSHOT_TTL_SECONDS = 900
 ENABLE_SESSION_SNAPSHOT = False
 
@@ -522,6 +524,26 @@ def parse_uploaded_file(file_name: str, file_bytes: bytes) -> dict[str, pd.DataF
         return {f"{file_name}::{sheet}": xl.parse(sheet) for sheet in xl.sheet_names}
 
     raise ValueError("Unsupported file format. Please upload CSV, Excel, or JSON files.")
+
+
+def load_repo_demo_files() -> dict[str, pd.DataFrame]:
+    """Load packaged demo CSV files from repository demo_files folder."""
+    if not os.path.isdir(DEMO_FILES_DIR):
+        raise FileNotFoundError(f"Demo folder not found in repository: {DEMO_FILES_DIR}")
+    demo_files = sorted(
+        [
+            f for f in os.listdir(DEMO_FILES_DIR)
+            if f.lower().endswith(".csv")
+        ]
+    )
+    if not demo_files:
+        raise FileNotFoundError("No demo CSV files found in repository demo_files folder.")
+
+    loaded: dict[str, pd.DataFrame] = {}
+    for name in demo_files:
+        path = os.path.join(DEMO_FILES_DIR, name)
+        loaded[name] = pd.read_csv(path, low_memory=False)
+    return loaded
 
 
 @st.cache_data(show_spinner=False)
@@ -1807,6 +1829,34 @@ def render_sidebar() -> None:
         '<div class="sidebar-helper">200MB per file • CSV, XLSX, XLS, JSON</div>',
         unsafe_allow_html=True,
     )
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
+
+    st.sidebar.markdown('<div class="sidebar-card">', unsafe_allow_html=True)
+    st.sidebar.markdown('<div class="sidebar-card-title">Testing Demo Files</div>', unsafe_allow_html=True)
+    load_demo = st.sidebar.button(
+        "Load Demo Files",
+        key="gateway_load_demo_files",
+        use_container_width=True,
+    )
+    st.sidebar.markdown(
+        '<div class="sidebar-helper">Loads packaged demo CSVs from repository `demo_files`.</div>',
+        unsafe_allow_html=True,
+    )
+    if load_demo:
+        try:
+            loaded = load_repo_demo_files()
+            first_key = None
+            for demo_name, demo_df in loaded.items():
+                st.session_state.data_registry[demo_name] = demo_df
+                st.session_state.file_signatures.add(f"repo-demo::{demo_name}")
+                if first_key is None:
+                    first_key = demo_name
+            if first_key:
+                st.session_state.lens_source = f"Registry::{first_key}"
+                st.session_state.jump_to_lens = True
+                st.toast(f"Loaded {len(loaded)} demo file(s).")
+        except Exception as exc:
+            st.sidebar.error(f"Demo load failed: {exc}")
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
     if st.sidebar.button("✨ Generate via AI Astra", key="sidebar_jump_ai_astra", type="primary", use_container_width=True):
