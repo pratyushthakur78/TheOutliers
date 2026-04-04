@@ -4134,6 +4134,7 @@ def main() -> None:
         "Critic",
         "Model Validation Sandbox",
     ]
+    prefer_architect = st.session_state.get("gateway_input_mode") == "Natural Language"
     if st.session_state.get("jump_to_lens"):
         tab_labels = [
             "Lens",
@@ -4141,7 +4142,7 @@ def main() -> None:
             "Critic",
             "Model Validation Sandbox",
         ]
-    elif st.session_state.get("jump_to_architect"):
+    elif st.session_state.get("jump_to_architect") or prefer_architect:
         tab_labels = [
             "Architect",
             "Lens",
