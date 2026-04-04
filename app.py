@@ -1667,8 +1667,6 @@ def init_state() -> None:
         st.session_state.jump_to_ai_astra = False
     if "jump_to_architect" not in st.session_state:
         st.session_state.jump_to_architect = False
-    if "architect_input_mode" not in st.session_state:
-        st.session_state.architect_input_mode = "Seed Data"
     if "gateway_input_mode" not in st.session_state:
         st.session_state.gateway_input_mode = "Both"
     if "gateway_nl_prompt" not in st.session_state:
@@ -1770,7 +1768,6 @@ def clear_loaded_app_state() -> None:
     st.session_state.jump_to_lens = False
     st.session_state.jump_to_ai_astra = False
     st.session_state.jump_to_architect = False
-    st.session_state.architect_input_mode = "Seed Data"
     st.session_state.gateway_input_mode = "Both"
     st.session_state.gateway_nl_prompt = (
         "Generate credit-risk DPD data with customer_id, loan_id, dpd_bucket, "
@@ -1862,7 +1859,6 @@ def render_sidebar() -> None:
     if st.sidebar.button("✨ Generate via AI Astra", key="sidebar_jump_ai_astra", type="primary", use_container_width=True):
         st.session_state.jump_to_architect = True
         st.session_state.gateway_input_mode = "Natural Language"
-        st.session_state.architect_input_mode = "Natural Language"
         st.rerun()
 
     if uploads:
@@ -2445,7 +2441,7 @@ def render_synthetic_generator_tab() -> None:
         horizontal=True,
         key="syn_method_selection",
     )
-    g1, g2 = st.columns(2)
+    g1, g2, g3 = st.columns(3)
     target_rows = int(
         g2.number_input(
             "Target synthetic rows",
@@ -2454,6 +2450,17 @@ def render_synthetic_generator_tab() -> None:
             value=min(max(10, len(private_df) * 10), 100_000),
             step=100,
             key="syn_target_rows",
+        )
+    )
+    base_seed = int(
+        g3.number_input(
+            "Random seed",
+            min_value=1,
+            max_value=999_999,
+            value=42,
+            step=1,
+            key="syn_random_seed",
+            help="Use same seed + same config for repeatable output.",
         )
     )
     model_choice = "Diffusion-style bootstrap"
@@ -2559,7 +2566,8 @@ def render_synthetic_generator_tab() -> None:
 
                 for attempt in range(max_attempts):
                     attempts_used = attempt + 1
-                    np.random.seed(42 + attempt)
+                    iter_seed = base_seed + attempt
+                    np.random.seed(iter_seed)
                     if model_choice == "CTGAN (GAN)":
                         if SDV_AVAILABLE:
                             candidate = se.generate_sdv_synthetic(private_df, target_rows, "CTGAN")
@@ -2577,12 +2585,12 @@ def render_synthetic_generator_tab() -> None:
                             custom_instruction=user_instruction,
                         )
                     elif model_choice == "Bootstrap (sample rows with replacement)":
-                        candidate = private_df.sample(n=target_rows, replace=True, random_state=42 + attempt).reset_index(drop=True)
+                        candidate = private_df.sample(n=target_rows, replace=True, random_state=iter_seed).reset_index(drop=True)
                     elif model_choice == "Subsample (without replacement)":
                         if target_rows <= len(private_df):
-                            candidate = private_df.sample(n=target_rows, replace=False, random_state=42 + attempt).reset_index(drop=True)
+                            candidate = private_df.sample(n=target_rows, replace=False, random_state=iter_seed).reset_index(drop=True)
                         else:
-                            candidate = private_df.sample(n=target_rows, replace=True, random_state=42 + attempt).reset_index(drop=True)
+                            candidate = private_df.sample(n=target_rows, replace=True, random_state=iter_seed).reset_index(drop=True)
                     elif model_choice == "Tile (repeat full table)":
                         if len(private_df) == 0:
                             candidate = private_df.copy()
@@ -2595,7 +2603,7 @@ def render_synthetic_generator_tab() -> None:
                         else:
                             reps = int(np.ceil(target_rows / len(private_df)))
                             tiled = pd.concat([private_df] * reps, ignore_index=True)
-                            candidate = tiled.sample(frac=1.0, random_state=42 + attempt).head(target_rows).reset_index(drop=True)
+                            candidate = tiled.sample(frac=1.0, random_state=iter_seed).head(target_rows).reset_index(drop=True)
                     elif model_choice == "Synthetic - perturb":
                         candidate = se.generate_bootstrap_synthetic(private_df, target_rows)
                     elif model_choice == "Synthetic - independent":
@@ -3047,7 +3055,7 @@ def render_seed_plus_prompt_tab() -> None:
     noise_level = float(st.session_state.get("both_privacy_noise", 0.02))
     private_df = se.apply_privacy_transform(seed_df, tuple(selected_pii), scrub_mode, k_anon, noise_level)
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     target_rows = int(
         c1.number_input(
             "Target synthetic rows",
@@ -3062,6 +3070,17 @@ def render_seed_plus_prompt_tab() -> None:
         "Distribution profile",
         ["Normalized (seed-aligned)", "Skewed (stress-test)"],
         key="both_distribution_profile",
+    )
+    both_seed = int(
+        c3.number_input(
+            "Random seed",
+            min_value=1,
+            max_value=999_999,
+            value=42,
+            step=1,
+            key="both_random_seed",
+            help="Use same seed + same config for repeatable output in this session.",
+        )
     )
     skew_strength = 0.35
     if profile_mode == "Skewed (stress-test)":
@@ -3079,6 +3098,7 @@ def render_seed_plus_prompt_tab() -> None:
     if st.button("Generate Synthetic Data (Seed + Prompt)", type="primary", use_container_width=True, key="both_generate_btn"):
         try:
             with st.spinner("Generating synthetic data from seed + prompt..."):
+                np.random.seed(both_seed)
                 out = generate_with_azure_llm(private_df, target_rows, custom_instruction=request_text)
                 if profile_mode == "Normalized (seed-aligned)":
                     out = se.align_synthetic_to_seed_distribution(private_df, out)
