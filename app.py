@@ -45,6 +45,8 @@ else:
 HACKATHON_DIR = os.getenv("HACKATHON_DIR", DEFAULT_HACKATHON_DIR)
 NOTEBOOK_OUTPUT_PATH = os.path.join(HACKATHON_DIR, "data_analysis.ipynb")
 SESSION_SNAPSHOT_PATH = os.path.join(HACKATHON_DIR, ".streamlit_session_snapshot.pkl")
+DEMO_FILES_DIR = os.path.join(HACKATHON_DIR, "demo_files")
+HELP_ME_PATH = os.path.join(HACKATHON_DIR, "HELP_ME.md")
 SESSION_SNAPSHOT_TTL_SECONDS = 900
 ENABLE_SESSION_SNAPSHOT = False
 
@@ -115,6 +117,22 @@ def save_notebook_to_path(path: str) -> tuple[bool, str]:
         return True, path
     except OSError as e:
         return False, str(e)
+
+
+@st.cache_data(show_spinner=False)
+def load_help_me_markdown() -> str:
+    fallback = (
+        "# Help Me\n\n"
+        "Help content is unavailable. Ensure `HELP_ME.md` is present in the application root.\n"
+    )
+    try:
+        if not os.path.exists(HELP_ME_PATH):
+            return fallback
+        with io.open(HELP_ME_PATH, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+        return content if content else fallback
+    except OSError:
+        return fallback
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +494,56 @@ def parse_uploaded_file(file_name: str, file_bytes: bytes) -> dict[str, pd.DataF
         return {f"{file_name}::{sheet}": xl.parse(sheet) for sheet in xl.sheet_names}
 
     raise ValueError("Unsupported file format. Please upload CSV, Excel, or JSON files.")
+
+
+def create_fixed_demo_files() -> dict[str, str]:
+    """Create deterministic demo CSVs for quick testing and return their paths."""
+    os.makedirs(DEMO_FILES_DIR, exist_ok=True)
+    rng = np.random.default_rng(42)
+
+    n_cust = 500
+    cust_ids = np.arange(100001, 100001 + n_cust, dtype=np.int64)
+    regions = np.array(["North", "South", "East", "West"])
+    segments = np.array(["Retail", "SME", "Corporate"])
+    risk_tiers = np.array(["Low", "Medium", "High"])
+
+    customer_df = pd.DataFrame(
+        {
+            "customer_id": cust_ids,
+            "region": rng.choice(regions, size=n_cust, replace=True, p=[0.24, 0.26, 0.23, 0.27]),
+            "segment": rng.choice(segments, size=n_cust, replace=True, p=[0.58, 0.3, 0.12]),
+            "risk_tier": rng.choice(risk_tiers, size=n_cust, replace=True, p=[0.55, 0.33, 0.12]),
+            "annual_income": np.round(rng.normal(780000, 240000, size=n_cust)).clip(120000, 2500000),
+        }
+    )
+
+    n_txn = 3000
+    txn_customer = rng.choice(cust_ids, size=n_txn, replace=True)
+    base_default = rng.choice([0, 1], size=n_txn, replace=True, p=[0.88, 0.12])
+    exposure = np.round(rng.gamma(shape=2.0, scale=16000, size=n_txn), 2)
+    dpd = rng.choice([0, 5, 15, 30, 60, 90], size=n_txn, replace=True, p=[0.52, 0.14, 0.12, 0.11, 0.07, 0.04])
+
+    txn_df = pd.DataFrame(
+        {
+            "loan_id": np.arange(700001, 700001 + n_txn, dtype=np.int64),
+            "customer_id": txn_customer,
+            "default_flag_12m": base_default.astype(np.int64),
+            "dpd_days": dpd.astype(np.int64),
+            "exposure": exposure,
+            "interest_rate": np.round(rng.uniform(8.5, 24.0, size=n_txn), 2),
+            "product": rng.choice(["PL", "BL", "LAP", "CC"], size=n_txn, replace=True, p=[0.42, 0.26, 0.12, 0.2]),
+            "booking_date": pd.to_datetime("2023-01-01") + pd.to_timedelta(rng.integers(0, 730, size=n_txn), unit="D"),
+        }
+    )
+
+    customer_path = os.path.join(DEMO_FILES_DIR, "demo_customer_master.csv")
+    txn_path = os.path.join(DEMO_FILES_DIR, "demo_loan_book.csv")
+    customer_df.to_csv(customer_path, index=False)
+    txn_df.to_csv(txn_path, index=False)
+    return {
+        "demo_customer_master.csv": customer_path,
+        "demo_loan_book.csv": txn_path,
+    }
 
 
 @st.cache_data(show_spinner=False)
@@ -1761,6 +1829,40 @@ def render_sidebar() -> None:
         '<div class="sidebar-helper">200MB per file • CSV, XLSX, XLS, JSON</div>',
         unsafe_allow_html=True,
     )
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
+
+    st.sidebar.markdown('<div class="sidebar-card">', unsafe_allow_html=True)
+    st.sidebar.markdown('<div class="sidebar-card-title">Testing Demo Files</div>', unsafe_allow_html=True)
+    col_a, col_b = st.sidebar.columns(2)
+    create_demo = col_a.button("Save Demo Files", key="gateway_save_demo_files", use_container_width=True)
+    load_demo = col_b.button(
+        "Load Demo Files",
+        key="gateway_load_demo_files",
+        use_container_width=True,
+        disabled=(gateway_mode == "Natural Language"),
+    )
+    st.sidebar.markdown(
+        f'<div class="sidebar-helper">Fixed demo CSVs are stored in: {html.escape(DEMO_FILES_DIR)}</div>',
+        unsafe_allow_html=True,
+    )
+    if create_demo:
+        files = create_fixed_demo_files()
+        st.sidebar.success(f"Saved {len(files)} demo file(s).")
+    if load_demo:
+        files = create_fixed_demo_files()
+        first_key = None
+        for demo_name, demo_path in files.items():
+            try:
+                st.session_state.data_registry[demo_name] = pd.read_csv(demo_path, low_memory=False)
+                st.session_state.file_signatures.add(f"demo::{demo_name}")
+                if first_key is None:
+                    first_key = demo_name
+            except Exception as exc:
+                st.sidebar.error(f"{demo_name}: {exc}")
+        if first_key:
+            st.session_state.lens_source = f"Registry::{first_key}"
+            st.session_state.jump_to_lens = True
+            st.toast("Demo files loaded into Gateway.")
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
     if st.sidebar.button("✨ Generate via AI Astra", key="sidebar_jump_ai_astra", type="primary", use_container_width=True):
@@ -3621,6 +3723,17 @@ def render_artifact_panel() -> None:
         mime="application/json",
         use_container_width=True,
         key="artifact_final_report",
+    )
+    help_md = load_help_me_markdown()
+    with st.expander("Help Me", expanded=False):
+        st.markdown(help_md)
+    st.download_button(
+        "Download Help Me (MD)",
+        data=help_md.encode("utf-8"),
+        file_name="HELP_ME.md",
+        mime="text/markdown",
+        use_container_width=True,
+        key="artifact_help_me_dl",
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
