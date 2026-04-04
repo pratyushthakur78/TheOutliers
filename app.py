@@ -3282,7 +3282,14 @@ def render_model_validation_sandbox_tab() -> None:
     algo_choice = st.selectbox("Algorithm", algo_opts, index=algo_idx, key="mv_algo")
 
     if st.button("Run baseline validation", type="primary", use_container_width=True, key="mv_run"):
-        from sklearn.model_selection import train_test_split
+        try:
+            from sklearn.model_selection import train_test_split
+        except Exception:
+            st.error(
+                "scikit-learn is required for Model Validation Sandbox. "
+                "Install it with: pip install scikit-learn"
+            )
+            return
         X = real_df[feature_cols].copy()
         y = real_df[target]
         m = y.notna()
