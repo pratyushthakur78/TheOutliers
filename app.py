@@ -1915,21 +1915,49 @@ def render_synthetic_generator_tab() -> None:
     c2.metric("Columns", seed_df.shape[1])
     c3.metric("Null cells", f"{int(seed_df.isna().sum().sum()):,}")
     pii_df = detect_pii_columns(seed_df)
-    st.caption(
-        "Select PII columns to mask/drop. This mirrors Architect-style privacy controls "
-        "and runs generation on the masked seed lens."
-    )
     pii_candidates = pii_df.loc[pii_df["pii_detected"] == True, "column"].astype(str).tolist()
-    selected_pii = st.multiselect(
-        "PII columns to scrub",
-        options=list(seed_df.columns),
-        default=pii_candidates,
-        key="syn_pii_cols",
-    )
-    p1, p2, p3 = st.columns(3)
-    scrub_mode = p1.selectbox("PII scrubbing", ["mask", "drop"], key="syn_scrub")
-    k_anon = int(p2.number_input("k-anonymity (approx)", min_value=1, max_value=50, value=3, step=1))
-    noise_level = float(p3.slider("Numeric noise", 0.0, 0.5, 0.02, 0.01))
+    with st.expander("Privacy & masking - seed lens", expanded=False):
+        selected_pii = st.multiselect(
+            "Columns to mask/drop",
+            options=list(seed_df.columns),
+            default=pii_candidates,
+            key="syn_privacy_cols",
+        )
+        p1, p2, p3 = st.columns(3)
+        scrub_mode = p1.selectbox("PII mode", ["mask", "drop"], key="syn_privacy_mode")
+        k_anon = int(
+            p2.number_input(
+                "k-anonymity",
+                min_value=1,
+                max_value=50,
+                value=3,
+                step=1,
+                key="syn_privacy_k",
+            )
+        )
+        noise_level = float(
+            p3.slider(
+                "Numeric noise",
+                0.0,
+                0.5,
+                0.02,
+                0.01,
+                key="syn_privacy_noise",
+            )
+        )
+        private_preview = apply_privacy_transform(
+            seed_df,
+            tuple(selected_pii),
+            scrub_mode,
+            k_anon,
+            noise_level,
+        )
+        st.caption("Preview (masked seed lens)")
+        st.dataframe(private_preview.head(8), use_container_width=True, height=210)
+    selected_pii = st.session_state.get("syn_privacy_cols", pii_candidates)
+    scrub_mode = st.session_state.get("syn_privacy_mode", "mask")
+    k_anon = int(st.session_state.get("syn_privacy_k", 3))
+    noise_level = float(st.session_state.get("syn_privacy_noise", 0.02))
     private_df = apply_privacy_transform(
         seed_df,
         tuple(selected_pii),
